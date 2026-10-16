@@ -9,15 +9,17 @@ import { WalletModule } from './api/wallets/wallet.module';
 import { DatabaseConnection } from './infra/database/database-connection.service';
 import { buildMikroOrmConfig } from './infra/mikro-orm.config';
 import { PersistenceModule } from './infra/persistence/persistence.module';
+import { SqsModule } from './infra/sqs/sqs.module';
 
 /**
- * Composition root: liga infraestrutura (MikroORM) e a camada HTTP.
+ * Composition root: liga infraestrutura (MikroORM, SQS/workers) e a camada HTTP.
  * As regras de dependência entre domain/application/infra/api estão em ARCHITECTURE.md §1.
  */
 @Module({
   imports: [
     MikroOrmModule.forRoot(buildMikroOrmConfig()),
     PersistenceModule,
+    SqsModule,
     HealthModule,
     WalletModule,
     WageringModule,

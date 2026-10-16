@@ -6,12 +6,17 @@ import { AppModule } from './app.module';
 import { loadConfig } from './infra/config/env';
 
 async function bootstrap(): Promise<void> {
-  const { port } = loadConfig();
+  const { port, workers } = loadConfig();
   const app = await NestFactory.create(AppModule);
 
-  await app.listen(port);
+  // Importante para OnApplicationShutdown (worker da outbox: parar o polling e
+  // terminar o lote em andamento).
+  app.enableShutdownHooks();
 
-  console.log(JSON.stringify({ level: 'info', event: 'http.listening', port }));
+  if (workers.enabled.includes('api')) {
+    await app.listen(port);
+    console.log(JSON.stringify({ level: 'info', event: 'http.listening', port }));
+  }
 }
 
 void bootstrap();

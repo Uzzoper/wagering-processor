@@ -1,5 +1,6 @@
 import type { IntegrationEvent } from '../domain/events';
 import type { Money } from '../domain/money';
+import type { OutboxMessage } from '../domain/outbox-message';
 import type { WagerTransaction } from '../domain/wager-transaction';
 import type { Wallet } from '../domain/wallet';
 import type { WalletLedgerEntry } from '../domain/wallet-ledger-entry';
@@ -57,8 +58,31 @@ export interface LedgerStore {
 }
 
 export interface OutboxStore {
-  /** Só INSERT — a publicação é do worker de outbox, nunca da tx. */
+  /** Só INSERT — a publicação é do worker de outbox, nunca da tx financeira. */
   insert(events: IntegrationEvent<unknown>[]): Promise<void>;
+  /**
+   * Claim com lease em tx curta: `published_at IS NULL AND next_attempt_at <= now()`
+   * em `FOR UPDATE SKIP LOCKED`, adiantando `next_attempt_at` em `leaseMs`.
+   * Concorrentes nunca recebem a mesma linha no mesmo momento.
+   */
+  claimDue(limit: number, leaseMs: number): Promise<OutboxMessage[]>;
+  /** Grava `published_at = now()` após a publicação (idempotente, tx curta). */
+  markPublished(id: string): Promise<void>;
+  /** Persiste attempts + `next_attempt_at` calculados por `OutboxMessage.scheduleRetry`. */
+  persistRetry(id: string, attempts: number, nextAttemptAt: Date): Promise<void>;
+}
+
+/** Evento pronto para o broker: envelope serializado + chaves de rota/dedup SQS FIFO. */
+export interface PublishRequest {
+  eventId: string;
+  aggregateId: string;
+  /** Envelope `IntegrationEvent.toJSON()` serializado (JSON string). */
+  payload: string;
+}
+
+/** A única porta que publica depois do commit — usada só pelo worker da outbox. */
+export interface EventPublisherPort {
+  publish(request: PublishRequest): Promise<void>;
 }
 
 /** Repositórios vinculados ao mesmo `EntityManager` (e à mesma tx SQL). */
@@ -77,3 +101,4 @@ export interface UnitOfWork {
 }
 
 export const UNIT_OF_WORK = Symbol('UnitOfWork');
+export const EVENT_PUBLISHER = Symbol('EventPublisherPort');
