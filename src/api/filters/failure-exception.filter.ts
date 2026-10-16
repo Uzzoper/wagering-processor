@@ -53,7 +53,16 @@ function mapFailure(exception: unknown): ErrorResponseBody & { status: number } 
 const FAILURE_HTTP_STATUS = new Map<FailureCode, number>([
   [FailureCodes.InvalidPayload, 400],
   [FailureCodes.WalletNotFound, 404],
+  [FailureCodes.TransactionNotFound, 404],
   [FailureCodes.WalletConflict, 409],
+  [FailureCodes.IdempotencyConflict, 409],
+  [FailureCodes.InsufficientBalance, 422],
+  [FailureCodes.ReversalWouldOverdraw, 422],
+  [FailureCodes.InvalidReference, 422],
+  [FailureCodes.AlreadyReversed, 422],
+  [FailureCodes.AmountMismatch, 422],
+  [FailureCodes.CurrencyMismatch, 422],
+  [FailureCodes.WalletOwnerMismatch, 422],
   [FailureCodes.InfraTransient, 503],
 ]);
 

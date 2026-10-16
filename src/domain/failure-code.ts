@@ -15,6 +15,7 @@ export const FailureCodes = {
   IdempotencyConflict: 'IDEMPOTENCY_CONFLICT',
   WalletConflict: 'WALLET_CONFLICT',
   WalletNotFound: 'WALLET_NOT_FOUND',
+  TransactionNotFound: 'TRANSACTION_NOT_FOUND',
   InvalidPayload: 'INVALID_PAYLOAD',
   PendingReference: 'PENDING_REFERENCE',
   InfraTransient: 'INFRA_TRANSIENT',

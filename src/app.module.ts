@@ -4,6 +4,7 @@ import { APP_FILTER } from '@nestjs/core';
 
 import { FailureExceptionFilter } from './api/filters/failure-exception.filter';
 import { HealthModule } from './api/health/health.module';
+import { WageringModule } from './api/wagering/wagering.module';
 import { WalletModule } from './api/wallets/wallet.module';
 import { DatabaseConnection } from './infra/database/database-connection.service';
 import { buildMikroOrmConfig } from './infra/mikro-orm.config';
@@ -19,6 +20,7 @@ import { PersistenceModule } from './infra/persistence/persistence.module';
     PersistenceModule,
     HealthModule,
     WalletModule,
+    WageringModule,
   ],
   providers: [
     DatabaseConnection,

@@ -188,8 +188,9 @@ ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_direction;
 ```
 
 * `PROCESSED/REJECTED/FAILED` imutáveis: garantido por código (transição lança `InvalidTransactionStateError` se terminal) + trigger que bloqueia `UPDATE` que mude linha terminal + ledger sem `UPDATE/DELETE`.
-* `OPENING` interno: validação só na borda API/SQS, que rejeita `kind=OPENING` com `422` (sem `CHECK` de `created_by` no schema).
+* `OPENING` interno: validação só na borda API/SQS, que rejeita `kind=OPENING` com `400` (sem `CHECK` de `created_by` no schema).
 * Interpretação adicional (reversão única): a spec diz "não pode ser revertida duas vezes pelo mesmo tipo", mas permitir `REFUND` + `ROLLBACK` sobre a mesma `BET` creditaria duas vezes. Travado: **uma única reversão por referência, qualquer tipo**, garantida no banco pelo índice parcial acima. Mais conservador e auditável; registrado aqui como interpretação adicional conforme a spec permite.
+* Interpretação adicional (referência do WIN): a spec permite que o WIN referencie a BET, sem dizer o que fazer quando a referência falta ou é inválida. Travado: referência do WIN é opcional e informativa — vincula quando resolve para transação `PROCESSED`, senão segue sem vínculo; WIN nunca vai para `PENDING_REFERENCE`.
 
 ## 4. Idempotência
 
@@ -266,6 +267,7 @@ Toda `REJECTED` carrega `failureCode` estável legível por máquina. Taxonomia 
 | `IDEMPOTENCY_CONFLICT` | mesma key (ou mesma external id) com payload diferente | `409` | não, use nova key |
 | `WALLET_CONFLICT` | `playerId+currency` duplicado | `409` | não |
 | `WALLET_NOT_FOUND` | wallet inexistente | `404` | não |
+| `TRANSACTION_NOT_FOUND` | transação inexistente nos GETs | `404` | não |
 | `INVALID_PAYLOAD` | DTO/Money inválido (`NaN`, escala, `OPENING` externo etc.) | `400` | só após corrigir |
 | `PENDING_REFERENCE` | aceite, aguardando referência (não é falha, é `status`) | `202` | aguarde worker |
 | `INFRA_TRANSIENT` | PG/SQS fora, lock timeout `55P03`, deadlock `40P01` | `503` | sim, com backoff |
