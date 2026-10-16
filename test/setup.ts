@@ -14,6 +14,9 @@ process.env.DB_HOST ??= 'localhost';
 process.env.DB_PORT ??= '5433';
 process.env.DB_USER ??= 'wagering';
 process.env.DB_PASSWORD ??= 'wagering';
+// Nenhum teste roda o publisher em loop automaticamente: os testes da fatia 7a
+// instanciam o `OutboxPublisherWorker` direto, com configuração explícita.
+process.env.WORKERS_ENABLED = 'api';
 
 export const TEST_DB_NAME = process.env.DB_NAME;
 const MAINTENANCE_DB_NAME = 'wagering';
