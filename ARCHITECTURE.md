@@ -62,7 +62,7 @@ Criação de wallet (`POST /wallets`) segue o mesmo padrão: `CreateWalletUseCas
 
 * `amount NUMERIC(19,2) NOT NULL` + `currency CHAR(3) NOT NULL`. Exemplo: `balance_amount`, `balance_currency`.
 * Por que `NUMERIC(19,2)` e não `float`/`double`, `integer` de centavos ou `varchar`: é exato em PG, impõe escala 2 no schema, permite `CHECK (balance_amount >= 0)` e ordenação/soma no banco para reconciliação. `decimal.js` no domínio; driver devolve string, convertemos sem passar por `number`.
-* `Money` do domínio nunca importa tipo do ORM nem decorator do Nest. DTOs e eventos usam `MoneyProps { amount: string; currency: string }` com regex `^\d+\.\d{2}$` na borda (rejeita `NaN`, `Infinity`, `1e3`, `""`, `25.1`, `25.123`, negativo em input).
+* `Money` do domínio nunca importa tipo do ORM nem decorator do Nest. DTOs e eventos usam `MoneyProps { amount: string; currency: string }` com regex `^\d+\.\d{2}$` na borda (rejeita `NaN`, `Infinity`, `1e3`, `""`, `25.1`, `25.123`, negativo em input). Moeda em ISO-4217 (`^[A-Z]{3}$`) no domínio e na borda.
 * Escopo de moeda: código é multi-moeda (toda operação checa `assertSameCurrency`, cross-currency é erro de domínio), mas testes e seed assumem `BRL`. Conflito de moeda é testado e mapeado como `422`.
 
 ## 3. Concorrência por `walletId`

@@ -29,6 +29,13 @@ describe('Wallet.open', () => {
     expect(wallet.version).toBe(1);
   });
 
+  test('moeda da wallet nasce do Money já validado (modelo multi-moeda)', () => {
+    const wallet = Wallet.open({ id: 'wallet-2', playerId: 'player-2', initialBalance: usd('10.00') });
+
+    expect(wallet.currency).toBe('USD');
+    expect(wallet.balance.toJSON()).toEqual({ amount: '10.00', currency: 'USD' });
+  });
+
   test('createdAt e updatedAt são preenchidos e coincidem na criação', () => {
     const wallet = openWallet();
 

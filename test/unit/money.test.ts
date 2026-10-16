@@ -55,10 +55,15 @@ describe('Money.from — entradas inválidas', () => {
     });
   }
 
-  test('rejeita currency vazia ou não-string', () => {
+  test('rejeita currency vazia, não-string ou fora do ISO-4217', () => {
     expect(() => Money.from({ amount: '25.00', currency: '' })).toThrow(InvalidMoneyError);
     expect(() => Money.from({ amount: '25.00', currency: '   ' })).toThrow(InvalidMoneyError);
-    expect(() => Money.from({ amount: '25.00', currency: 42 as unknown as string })).toThrow(InvalidMoneyError);
+    expect(() => Money.from({ amount: '25.00', currency: 42 as unknown as string })).toThrow(
+      InvalidMoneyError,
+    );
+    expect(() => Money.from({ amount: '25.00', currency: 'brl' })).toThrow(InvalidMoneyError);
+    expect(() => Money.from({ amount: '25.00', currency: 'BRLX' })).toThrow(InvalidMoneyError);
+    expect(() => Money.from({ amount: '25.00', currency: 'R$' })).toThrow(InvalidMoneyError);
   });
 
   test('a rejeição é InvalidMoneyError, não erro genérico de runtime', () => {

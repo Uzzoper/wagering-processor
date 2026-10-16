@@ -233,12 +233,15 @@ describe('POST /wallets: conflito de playerId+currency', () => {
 });
 
 describe('POST /wallets: payload inválido', () => {
-  test('amount fora do contrato (25.1, 1e3, negativo) e currency vazia → 400 INVALID_PAYLOAD', async () => {
+  test('amount fora do contrato e currency fora do ISO-4217 → 400 INVALID_PAYLOAD', async () => {
     const cases = [
       balanceInput('25.1'),
       balanceInput('1e3'),
       balanceInput('-5.00'),
       balanceInput('10.00', ''),
+      balanceInput('10.00', 'brl'),
+      balanceInput('10.00', 'BRLX'),
+      balanceInput('10.00', 'R$'),
       { playerId: 'not-a-uuid', initialBalance: { amount: '10.00', currency: 'BRL' } },
     ];
 

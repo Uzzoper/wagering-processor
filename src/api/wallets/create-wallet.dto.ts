@@ -39,8 +39,9 @@ export function parseCreateWalletBody(input: unknown): CreateWalletBody {
   if (typeof amount !== 'string' || !AMOUNT.test(amount)) {
     throw invalidPayload('initialBalance.amount must match ^\\d+\\.\\d{2}$');
   }
-  if (typeof currency !== 'string' || currency.trim().length === 0) {
-    throw invalidPayload('initialBalance.currency must be a non-empty string');
+  // ISO-4217: exatamente 3 letras maiúsculas (o domínio revalida via `Money.from`).
+  if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) {
+    throw invalidPayload('initialBalance.currency must be ISO-4217 (3 uppercase letters)');
   }
 
   return { playerId, initialBalance: { amount, currency } };

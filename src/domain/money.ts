@@ -47,8 +47,9 @@ function assertValidAmount(amount: unknown): asserts amount is string {
 }
 
 function assertValidCurrency(currency: unknown): asserts currency is string {
-  if (typeof currency !== 'string' || currency.trim().length === 0) {
-    throw new InvalidMoneyError('currency must be a non-empty ISO-4217 string');
+  // ISO-4217: exatamente 3 letras maiúsculas (ex.: `BRL`).
+  if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) {
+    throw new InvalidMoneyError('currency must be ISO-4217 (3 uppercase letters)');
   }
 }
 
