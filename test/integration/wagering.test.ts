@@ -632,6 +632,66 @@ describe('POST /wagering/transactions: concorrência obrigatória', () => {
     await assertLedgerConsistency(wallet.id);
   });
 
+  test('2 REFUNDs concorrentes da mesma BET = 1 PROCESSED + 1 ALREADY_REVERSED', async () => {
+    const playerId = crypto.randomUUID();
+    const wallet = await postWallet(playerId, '100.00');
+    const bet = splitInput(
+      wagerInput(playerId, wallet.id, { money: { amount: '30.00', currency: 'BRL' } }),
+    );
+    await postWager(bet.body, bet.key);
+    const ref = bet.body.externalTransactionId as string;
+    const first = splitInput(
+      wagerInput(playerId, wallet.id, {
+        kind: 'REFUND',
+        money: { amount: '30.00', currency: 'BRL' },
+        referenceExternalTransactionId: ref,
+      }),
+    );
+    const second = splitInput(
+      wagerInput(playerId, wallet.id, {
+        kind: 'REFUND',
+        money: { amount: '30.00', currency: 'BRL' },
+        referenceExternalTransactionId: ref,
+      }),
+    );
+
+    const firstRound = await Promise.all([
+      postWager(first.body, first.key),
+      postWager(second.body, second.key),
+    ]);
+    // Provedor-realista: transiente (ex.: deadlock 40P01 → 503) merece um retry
+    // com a mesma key — idempotente, converge ao estado terminal (ARCHITECTURE §2).
+    const inputs = [first, second];
+    const responses = await Promise.all(
+      firstRound.map((response, index) =>
+        response.status === 201 || response.status === 422
+          ? response
+          : postWager(inputs[index]!.body, inputs[index]!.key),
+      ),
+    );
+
+    const processed = responses.filter((response) => response.status === 201);
+    const rejected = responses.filter((response) => response.status === 422);
+    expect(processed).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.body.failureCode).toBe('ALREADY_REVERSED');
+    expect(processed[0]?.body.balance).toEqual({ amount: '100.00', currency: 'BRL' });
+
+    const reversals = await query<Array<{ count: number }>>(
+      `SELECT count(*)::int AS count FROM wager_transaction
+        WHERE reference_external_transaction_id = ? AND kind = 'REFUND' AND status = 'PROCESSED'`,
+      [ref],
+    );
+    expect(reversals[0]?.count).toBe(1);
+
+    const stored = await query<Array<{ balance_amount: string }>>(
+      `SELECT balance_amount FROM wallet WHERE id = ?`,
+      [wallet.id],
+    );
+    expect(stored[0]?.balance_amount).toBe('100.00');
+    await assertLedgerConsistency(wallet.id);
+  });
+
   test('wallets distintas em paralelo não se bloqueiam', async () => {
     const first = await postWallet(crypto.randomUUID(), '100.00');
     const second = await postWallet(crypto.randomUUID(), '100.00');
