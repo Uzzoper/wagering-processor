@@ -49,30 +49,21 @@ function mapFailure(exception: unknown): ErrorResponseBody & { status: number } 
   };
 }
 
+/** Fonte única da verdade: `FailureCode → HTTP`. O inverso deriva daqui. */
+const FAILURE_HTTP_STATUS = new Map<FailureCode, number>([
+  [FailureCodes.InvalidPayload, 400],
+  [FailureCodes.WalletNotFound, 404],
+  [FailureCodes.WalletConflict, 409],
+  [FailureCodes.InfraTransient, 503],
+]);
+
 function statusFor(code: FailureCode): number {
-  switch (code) {
-    case FailureCodes.InvalidPayload:
-      return 400;
-    case FailureCodes.WalletConflict:
-      return 409;
-    case FailureCodes.WalletNotFound:
-      return 404;
-    case FailureCodes.InfraTransient:
-      return 503;
-    default:
-      return 500;
-  }
+  return FAILURE_HTTP_STATUS.get(code) ?? 500;
 }
 
 function failureCodeForStatus(status: number): FailureCode {
-  switch (status) {
-    case 400:
-      return FailureCodes.InvalidPayload;
-    case 404:
-      return FailureCodes.WalletNotFound;
-    case 409:
-      return FailureCodes.WalletConflict;
-    default:
-      return FailureCodes.InfraTransient;
+  for (const [code, mapped] of FAILURE_HTTP_STATUS) {
+    if (mapped === status) return code;
   }
+  return FailureCodes.InfraTransient;
 }
