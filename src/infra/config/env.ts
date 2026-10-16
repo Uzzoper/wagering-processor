@@ -12,7 +12,7 @@ export interface DatabaseConfig {
   password: string;
 }
 
-/** Quais processos este serviço roda: `WORKERS_ENABLED=api,outbox`. */
+/** Quais processos este serviço roda: `WORKERS_ENABLED=api,outbox,sqs`. */
 export interface WorkersConfig {
   enabled: string[];
 }
@@ -25,6 +25,10 @@ export interface SqsConfig {
   secretAccessKey?: string;
   /** Nome (não URL) da fila de eventos da outbox. */
   eventsQueueName: string;
+  /** Nome (não URL) da fila de transações consumida pelo consumer. */
+  wagerQueueName: string;
+  /** Consumer SQS ligado (`sqs` ∈ `WORKERS_ENABLED`). */
+  consumerEnabled: boolean;
 }
 
 /** Parâmetros do publisher da outbox (polling/claim com lease). */
@@ -67,7 +71,7 @@ function parsePositiveMs(value: string | undefined, fallback: number, name: stri
 
 function parseWorkersEnabled(value: string | undefined): string[] {
   if (value === undefined || value.trim() === '') {
-    return ['api', 'outbox'];
+    return ['api', 'outbox', 'sqs'];
   }
   return value
     .split(',')
@@ -93,6 +97,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       accessKeyId: env.AWS_ACCESS_KEY_ID,
       secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
       eventsQueueName: env.SQS_EVENTS_QUEUE ?? 'wager-events.fifo',
+      wagerQueueName: env.SQS_WAGER_QUEUE ?? 'wager-transactions.fifo',
+      consumerEnabled: enabled.includes('sqs'),
     },
     outbox: {
       enabled: enabled.includes('outbox'),

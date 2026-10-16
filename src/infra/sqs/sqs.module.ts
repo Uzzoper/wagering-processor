@@ -1,16 +1,19 @@
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { Module } from '@nestjs/common';
 
-import { EVENT_PUBLISHER, UNIT_OF_WORK } from '../../application/ports';
+import { EVENT_PUBLISHER, UNIT_OF_WORK, type UnitOfWork } from '../../application/ports';
+import { SubmitWagerTransactionUseCase } from '../../application/submit-wager.use-case';
 import { loadConfig } from '../config/env';
 import { OutboxPublisherWorker } from '../workers/outbox-publisher';
 import { SqsEventPublisher } from './sqs-event-publisher';
+import { SqsWagerConsumer } from './sqs-wager-consumer';
 
 const SQS_CLIENT = Symbol('SqsClient');
 
 /**
- * Adaptador SQS + worker da outbox. O worker se auto-liga em `onModuleInit`
- * quando `WORKERS_ENABLED` contém `outbox` (default: `api,outbox`).
+ * Adaptador SQS + workers (outbox publisher e consumer de transações).
+ * Os workers se auto-likam em `onModuleInit` quando `WORKERS_ENABLED`
+ * contém `outbox`/`sqs` (default: `api,outbox,sqs`).
  */
 @Module({
   providers: [
@@ -53,7 +56,20 @@ const SQS_CLIENT = Symbol('SqsClient');
       },
       inject: [UNIT_OF_WORK, EVENT_PUBLISHER],
     },
+    {
+      provide: SqsWagerConsumer,
+      useFactory: (unitOfWork: UnitOfWork, client: SQSClient) => {
+        const { sqs } = loadConfig();
+        return new SqsWagerConsumer(
+          new SubmitWagerTransactionUseCase(unitOfWork),
+          client,
+          sqs.wagerQueueName,
+          { enabled: sqs.consumerEnabled },
+        );
+      },
+      inject: [UNIT_OF_WORK, SQS_CLIENT],
+    },
   ],
-  exports: [EVENT_PUBLISHER, OutboxPublisherWorker],
+  exports: [EVENT_PUBLISHER, OutboxPublisherWorker, SqsWagerConsumer],
 })
 export class SqsModule {}
