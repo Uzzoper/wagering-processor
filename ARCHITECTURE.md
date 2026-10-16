@@ -224,6 +224,7 @@ Filas: `wager-transactions.fifo` + `wager-transactions-dlq.fifo` (LocalStack) e 
 **Consumer SQS:**
 
 * Deduplica por inbox persistente `(consumerName='wager-sqs-consumer', messageId)` com `INSERT ... ON CONFLICT (consumer_name, message_id) DO NOTHING RETURNING` na mesma tx — pelo mesmo motivo do §4 (`23505` aborta a transação). Se não retornou linha → redelivery: retorna o efeito original sem tocar em saldo.
+* O consumer monta o input pelo mesmo validador de DTO da borda HTTP — a regra "zero só em LOSS" (e kind/`MoneyProps`/referência obrigatória) vale para as duas entradas.
 * Classificação de erro (travada): negócio (`REJECTED`, conflito idempotente, `LOSS` ok) → terminal, **ack**; transitório (PG/SQS fora, lock timeout `55P03`, deadlock `40P01`, `503`) → **não** ack, libera visibilidade com backoff, conta `sqs.retries`; permanente (payload inválido após N tentativas, `FAILED`) → DLQ após limite.
 * Limite SQS: `maxReceiveCount = 5`, `visibilityTimeout = 30s` com heartbeat via `ChangeVisibility` enquanto a tx roda. Em `SIGTERM`: para de puxar, conclui o em andamento ou estende visibilidade para outro assumir (nunca ack sem commit).
 * Cenário "morreu depois do commit e antes do ack": outra instância recebe de novo, acha inbox + transação terminal, responde replay e faz ack. Sem duplo débito por construção.
