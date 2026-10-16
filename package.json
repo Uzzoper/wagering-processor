@@ -10,7 +10,9 @@
     "start": "bun run src/main.ts",
     "start:dev": "bun --watch src/main.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migration:up": "bun run scripts/migrate.ts up",
+    "migration:down": "bun run scripts/migrate.ts down"
   },
   "devDependencies": {
     "@types/bun": "latest"

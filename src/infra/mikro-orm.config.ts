@@ -1,15 +1,32 @@
+import { Migrator } from '@mikro-orm/migrations';
 import { defineConfig } from '@mikro-orm/postgresql';
 
 import { loadConfig } from './config/env';
+import {
+  InboxMessageEntity,
+  OutboxMessageEntity,
+  WagerTransactionEntity,
+  WalletEntity,
+  WalletLedgerEntryEntity,
+} from './persistence';
 
 /**
  * Configuração do MikroORM (driver PostgreSQL) derivada de variáveis de ambiente.
  *
- * Sem entidades ainda: o esqueleto não define modelo de domínio persistido.
- * As migrations ficam em `src/infra/migrations` e ainda não existem.
+ * Entidades-espelho finas (só colunas + índices) em `src/infra/persistence`.
+ * O schema real é criado pelas migrations em `src/infra/migrations` — nunca por
+ * `schema:update`. As regras de negócio vivem no domínio (ARCHITECTURE.md §1).
  */
 export function buildMikroOrmConfig(env: NodeJS.ProcessEnv = process.env) {
   const { database } = loadConfig(env);
+
+  const entities = [
+    WalletEntity,
+    WagerTransactionEntity,
+    WalletLedgerEntryEntity,
+    InboxMessageEntity,
+    OutboxMessageEntity,
+  ];
 
   return defineConfig({
     host: database.host,
@@ -17,10 +34,11 @@ export function buildMikroOrmConfig(env: NodeJS.ProcessEnv = process.env) {
     dbName: database.name,
     user: database.user,
     password: database.password,
-    entities: [],
-    entitiesTs: [],
-    // Esqueleto ainda não tem entidades; o MikroORM v7 lança se `warnWhenNoEntities` for true.
-    discovery: { warnWhenNoEntities: false },
+    entities,
+    entitiesTs: entities,
+    // Registra o Migrator como extensão (MikroORM v7: acesso via `orm.migrator`).
+    extensions: [Migrator],
+    // O schema é governado por migrations; nada de sync automático.
     migrations: {
       path: 'src/infra/migrations',
       pathTs: 'src/infra/migrations',

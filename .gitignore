@@ -27,6 +27,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .cache
 *.tsbuildinfo
 
+# MikroORM migration snapshots (migrations são escritas à mão / §3)
+.snapshot-*.json
+
 # IntelliJ based IDEs
 .idea
 
