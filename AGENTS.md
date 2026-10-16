@@ -3,12 +3,12 @@
 ## Documentos fonte
 
 - `CHALLENGE.md`: cópia fiel do desafio — **não editar**, é a spec.
-- `README.md`: visão do projeto e comandos.
-- `ARCHITECTURE.md`: decisões, trade-offs, limitações (criar ao implementar).
+- `README.md`: visão do projeto e comandos (pode ser atualizado).
+- `ARCHITECTURE.md`: fonte das decisões, leia antes de qualquer tarefa. Se uma decisão mudar, atualize o documento no mesmo commit.
 
 ## Stack e comandos
 
-- Bun 1.x: `bun install`, `bun <file>`, `bun test`, `bun run <script>`, `bunx`. Não usar node/npm/vite/express. Bun carrega `.env` sozinho.
+- Bun >= 1.4.3: `bun install`, `bun <file>`, `bun test`, `bun run <script>`, `bunx`. Não usar node/npm/vite. Não usar Express direto, só pela plataforma do Nest. Bun carrega `.env` sozinho.
 - TS strict, NestJS, PostgreSQL, SQS via LocalStack, Docker Compose, MikroORM preferencial (TypeORM aceito, Prisma proibido), `decimal.js` para dinheiro.
 
 ## Regras de domínio (não quebrar)
@@ -21,6 +21,11 @@
 6. Inbox + saldo + ledger + outbox na **mesma tx SQL**. Ack SQS só pós-commit. Não publicar antes do commit.
 7. Unidade de concorrência = `walletId`. Sem lock global, sem `read-calculate-update` sem lock. Constraints de unicidade/imutabilidade/não-negatividade no schema.
 8. Auth não vale pontos: usar guard no-op / `ProviderIdentityPort`, documentar. Health aberto.
+9. Rejeição de negócio nunca lança exceção: o use case RETORNA `PROCESSED`, `REJECTED` ou `PENDING_REFERENCE`, a transação faz commit (persistindo a linha `REJECTED` e o evento) e só a borda mapeia para HTTP. Exceção é só para erro de infraestrutura (rollback, 503).
+10. Nunca capturar 23505 dentro da transação (aborta a tx). Usar `INSERT ... ON CONFLICT DO NOTHING RETURNING` e ler a linha existente.
+11. Ordem dentro da tx: inbox (só SQS), insert idempotente, lock da wallet (`FOR UPDATE`), regra de negócio, persistir tudo, commit. `SET LOCAL lock_timeout = '3s'` no início.
+12. Uma única reversão por referência, qualquer tipo (`REFUND` ou `ROLLBACK`), garantida pelo índice `uq_wager_single_reversal`.
+13. Outbox: claim com lease (`next_attempt_at` para frente) e `FOR UPDATE SKIP LOCKED`. Publicar só depois do commit.
 
 ## Onde mexer
 
@@ -33,8 +38,16 @@
 ## Testes e observabilidade
 
 - `bun test` para tudo. Concurrency com paralelismo real (50x replay, 100/80x2, ≥3 instâncias, kill após commit antes do ack, REFUND antes da ref).
+- Testes de integração usam o banco `wagering_test` (nunca o de desenvolvimento). O schema sobe uma vez no preload; nenhum teste faz `down()` nem `TRUNCATE`. Cada teste usa UUIDs próprios.
+- Postgres do compose na porta 5433.
+- Antes de qualquer commit: `bun run typecheck` e `bun test` verdes.
 - Logs JSON com `correlationId/messageId/transactionId/walletId/providerId`, sem payload financeiro completo. Métricas: status, duplicatas, retries, DLQ, lock conflicts, outbox lag, latência. Health `live` vs `ready`.
 
-## Estilo
+## Estilo e fluxo
 
-Mudanças pequenas e justificadas, sem refatorar design alheio. Copy PT-BR simples. Não criar docs novas sem pedido.
+- Comentários em português, uma ou duas linhas, só onde houver decisão não óbvia. Sem docblock em tudo.
+- Commits atômicos em português (um assunto por commit). Não fazer push sem pedido.
+- Não alterar `tsconfig.json` sem pedir (`verbatimModuleSyntax` e `useDefineForClassFields` ficam `false`). Não adicionar dependências sem avisar.
+- Migration já aplicada é imutável: mudança de schema = migration nova.
+- Mudanças pequenas e justificadas, sem refatorar o que não foi pedido.
+- Não criar docs novas sem pedido; `README` e `ARCHITECTURE.md` podem ser atualizados.
