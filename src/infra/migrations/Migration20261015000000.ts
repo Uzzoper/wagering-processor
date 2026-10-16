@@ -88,7 +88,7 @@ export class Migration20261015000000 extends Migration {
         payload JSONB NOT NULL,
         occurred_at TIMESTAMPTZ NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
-        next_attempt_at TIMESTAMPTZ,
+        next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         published_at TIMESTAMPTZ,
         CONSTRAINT outbox_message_pkey PRIMARY KEY (id)
       )
@@ -144,6 +144,14 @@ export class Migration20261015000000 extends Migration {
       `ALTER TABLE wallet ADD CONSTRAINT ck_wallet_balance_currency CHECK (balance_currency = currency)`,
     );
 
+    // ---- ledger: direção válida e saldo final não-negativo (§3) ----
+    this.addSql(
+      `ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_direction CHECK (direction IN ('DEBIT', 'CREDIT'))`,
+    );
+    this.addSql(
+      `ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_after_nonneg CHECK (balance_after_amount >= 0)`,
+    );
+
     // ---- ledger balanceado via CHECK (§3) ----
     this.addSql(`ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_amount_pos CHECK (amount > 0)`);
     this.addSql(`
@@ -159,6 +167,23 @@ export class Migration20261015000000 extends Migration {
       )
     `);
 
+    // ---- domínio de wager_transaction: kind/status/valor/referência/failure (§3) ----
+    this.addSql(
+      `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_kind CHECK (kind IN ('OPENING', 'BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK'))`,
+    );
+    this.addSql(
+      `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_status CHECK (status IN ('PENDING', 'PENDING_REFERENCE', 'PROCESSED', 'REJECTED', 'FAILED'))`,
+    );
+    this.addSql(
+      `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_money_pos CHECK (money_amount > 0)`,
+    );
+    this.addSql(
+      `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_ref_required CHECK (kind NOT IN ('REFUND', 'ROLLBACK') OR reference_external_transaction_id IS NOT NULL)`,
+    );
+    this.addSql(
+      `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_failure_code CHECK (status NOT IN ('REJECTED', 'FAILED') OR failure_code IS NOT NULL)`,
+    );
+
     // ---- imutabilidade do ledger (§3) ----
     this.addSql(`
       CREATE FUNCTION trg_ledger_immutable() RETURNS trigger AS $$
@@ -172,6 +197,12 @@ export class Migration20261015000000 extends Migration {
       CREATE TRIGGER trg_ledger_immutable
       BEFORE UPDATE OR DELETE ON wallet_ledger_entry
       FOR EACH ROW EXECUTE FUNCTION trg_ledger_immutable()
+    `);
+    // TRUNCATE não dispara triggers FOR EACH ROW; precisa de trigger FOR EACH STATEMENT.
+    this.addSql(`
+      CREATE TRIGGER trg_ledger_no_truncate
+      BEFORE TRUNCATE ON wallet_ledger_entry
+      FOR EACH STATEMENT EXECUTE FUNCTION trg_ledger_immutable()
     `);
 
     // ---- imutabilidade de linha terminal (§3, descrito no texto) ----
@@ -199,9 +230,7 @@ export class Migration20261015000000 extends Migration {
     );
     this.addSql(`CREATE INDEX ix_ledger_wallet_id ON wallet_ledger_entry (wallet_id, id)`);
 
-    // ---- outbox: next_attempt_at nunca NULL (§3) ----
-    this.addSql(`ALTER TABLE outbox_message ALTER COLUMN next_attempt_at SET NOT NULL`);
-    this.addSql(`ALTER TABLE outbox_message ALTER COLUMN next_attempt_at SET DEFAULT now()`);
+    // ---- outbox: next_attempt_at nunca NULL (já declarado no CREATE TABLE) ----
     this.addSql(
       `CREATE INDEX ix_outbox_pending ON outbox_message (next_attempt_at) WHERE published_at IS NULL`,
     );
@@ -224,8 +253,6 @@ export class Migration20261015000000 extends Migration {
     this.addSql(`ALTER TABLE wager_transaction DROP COLUMN IF EXISTS retry_attempts`);
 
     this.addSql(`DROP INDEX IF EXISTS ix_outbox_pending`);
-    this.addSql(`ALTER TABLE outbox_message ALTER COLUMN next_attempt_at DROP DEFAULT`);
-    this.addSql(`ALTER TABLE outbox_message ALTER COLUMN next_attempt_at DROP NOT NULL`);
 
     this.addSql(`DROP INDEX IF EXISTS ix_ledger_wallet_id`);
     this.addSql(`DROP INDEX IF EXISTS ix_wager_reference`);
@@ -233,10 +260,19 @@ export class Migration20261015000000 extends Migration {
 
     this.addSql(`DROP TRIGGER IF EXISTS trg_wager_terminal_immutable ON wager_transaction`);
     this.addSql(`DROP FUNCTION IF EXISTS trg_wager_terminal_immutable()`);
+    // A TRUNCATE trigger compartilha a função do ledger: dropar antes da função.
+    this.addSql(`DROP TRIGGER IF EXISTS trg_ledger_no_truncate ON wallet_ledger_entry`);
     this.addSql(`DROP TRIGGER IF EXISTS trg_ledger_immutable ON wallet_ledger_entry`);
     this.addSql(`DROP FUNCTION IF EXISTS trg_ledger_immutable()`);
 
     this.addSql(`DROP INDEX IF EXISTS uq_wager_single_reversal`);
+    this.addSql(`ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_failure_code`);
+    this.addSql(`ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_ref_required`);
+    this.addSql(`ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_money_pos`);
+    this.addSql(`ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_status`);
+    this.addSql(`ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_kind`);
+    this.addSql(`ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_after_nonneg`);
+    this.addSql(`ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_direction`);
     this.addSql(`ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_same_currency`);
     this.addSql(`ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_balanced`);
     this.addSql(`ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_amount_pos`);

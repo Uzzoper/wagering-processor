@@ -107,6 +107,10 @@ ALTER TABLE wallet ADD CONSTRAINT ck_wallet_version_pos CHECK (version >= 1);
 -- a moeda do saldo nunca diverge da moeda da wallet
 ALTER TABLE wallet ADD CONSTRAINT ck_wallet_balance_currency CHECK (balance_currency = currency);
 
+-- ledger: direção válida e saldo final não-negativo
+ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_direction CHECK (direction IN ('DEBIT', 'CREDIT'));
+ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_after_nonneg CHECK (balance_after_amount >= 0);
+
 -- ledger balanceado via CHECK (simples, roda em toda escrita — sem trigger de aritmética)
 ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_amount_pos CHECK (amount > 0);
 ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_balanced CHECK (
@@ -117,16 +121,35 @@ ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_same_currency CHECK (
   balance_before_currency = balance_after_currency
   AND balance_before_currency = currency
 );
+
+-- domínio de wager_transaction: valores válidos
+ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_kind CHECK (kind IN ('OPENING', 'BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK'));
+ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_status CHECK (status IN ('PENDING', 'PENDING_REFERENCE', 'PROCESSED', 'REJECTED', 'FAILED'));
+ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_money_pos CHECK (money_amount > 0);
+ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_ref_required CHECK (kind NOT IN ('REFUND', 'ROLLBACK') OR reference_external_transaction_id IS NOT NULL);
+ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_failure_code CHECK (status NOT IN ('REJECTED', 'FAILED') OR failure_code IS NOT NULL);
+
 -- imutabilidade do ledger: trigger trg_ledger_immutable (RAISE EXCEPTION em UPDATE/DELETE).
+-- TRUNCATE não dispara trigger FOR EACH ROW: o trigger trg_ledger_no_truncate (FOR EACH STATEMENT) reusa a mesma função.
 -- REVOKE UPDATE/DELETE só ajuda se a app usar role diferente do dono das tabelas; o trigger é a garantia real.
 
 -- índices de disputa e varredura
 CREATE INDEX ix_wager_wallet_status ON wager_transaction (wallet_id, status);
 CREATE INDEX ix_wager_reference ON wager_transaction (provider_id, reference_external_transaction_id);
 CREATE INDEX ix_ledger_wallet_id ON wallet_ledger_entry (wallet_id, id); -- paginação por cursor
--- outbox: next_attempt_at nunca NULL (com NULL o claim `next_attempt_at <= now()` nunca pega a linha)
-ALTER TABLE outbox_message ALTER COLUMN next_attempt_at SET NOT NULL;
-ALTER TABLE outbox_message ALTER COLUMN next_attempt_at SET DEFAULT now();
+-- outbox: `next_attempt_at` nunca NULL e já nasce com default (o claim
+-- `next_attempt_at <= now()` não pega linhas NULL)
+CREATE TABLE outbox_message (
+  id UUID PRIMARY KEY,
+  event_id UUID NOT NULL,
+  aggregate_id UUID NOT NULL,
+  event_type VARCHAR(255) NOT NULL,
+  payload JSONB NOT NULL,
+  occurred_at TIMESTAMPTZ NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ
+);
 CREATE INDEX ix_outbox_pending ON outbox_message (next_attempt_at) WHERE published_at IS NULL;
 -- PENDING_REFERENCE: tentativas + marco inicial para calcular o TTL de 24h
 ALTER TABLE wager_transaction ADD COLUMN retry_attempts INT NOT NULL DEFAULT 0;
@@ -146,13 +169,21 @@ ALTER TABLE wager_transaction ADD CONSTRAINT fk_wager_reference
   FOREIGN KEY (reference_transaction_id) REFERENCES wager_transaction (id);
 ```
 
-Reversão (`down`) das FKs, antes de dropar as tabelas:
+Reversão (`down`) das FKs e dos CHECKs, antes de dropar as tabelas:
 
 ```sql
 ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS fk_ledger_transaction;
 ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS fk_ledger_wallet;
 ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS fk_wager_reference;
 ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS fk_wager_wallet;
+DROP TRIGGER IF EXISTS trg_ledger_no_truncate ON wallet_ledger_entry;
+ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_failure_code;
+ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_ref_required;
+ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_money_pos;
+ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_status;
+ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS ck_wager_kind;
+ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_after_nonneg;
+ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_direction;
 ```
 
 * `PROCESSED/REJECTED/FAILED` imutáveis: garantido por código (transição lança `InvalidTransactionStateError` se terminal) + trigger que bloqueia `UPDATE` que mude linha terminal + ledger sem `UPDATE/DELETE`.
