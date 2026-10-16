@@ -104,6 +104,8 @@ CREATE UNIQUE INDEX uq_wager_single_reversal ON wager_transaction (reference_tra
 -- não-negatividade no banco, não só em código
 ALTER TABLE wallet ADD CONSTRAINT ck_wallet_balance_nonneg CHECK (balance_amount >= 0);
 ALTER TABLE wallet ADD CONSTRAINT ck_wallet_version_pos CHECK (version >= 1);
+-- a moeda do saldo nunca diverge da moeda da wallet
+ALTER TABLE wallet ADD CONSTRAINT ck_wallet_balance_currency CHECK (balance_currency = currency);
 
 -- ledger balanceado via CHECK (simples, roda em toda escrita — sem trigger de aritmética)
 ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_amount_pos CHECK (amount > 0);
@@ -131,6 +133,26 @@ ALTER TABLE wager_transaction ADD COLUMN retry_attempts INT NOT NULL DEFAULT 0;
 ALTER TABLE wager_transaction ADD COLUMN pending_since TIMESTAMPTZ;
 ALTER TABLE wager_transaction ADD COLUMN next_retry_at TIMESTAMPTZ;
 CREATE INDEX ix_wager_pending_ref ON wager_transaction (status, next_retry_at) WHERE status = 'PENDING_REFERENCE';
+
+-- integridade referencial (fatia 4; exige criar as tabelas-pai antes)
+ALTER TABLE wager_transaction ADD CONSTRAINT fk_wager_wallet
+  FOREIGN KEY (wallet_id) REFERENCES wallet (id);
+ALTER TABLE wallet_ledger_entry ADD CONSTRAINT fk_ledger_wallet
+  FOREIGN KEY (wallet_id) REFERENCES wallet (id);
+ALTER TABLE wallet_ledger_entry ADD CONSTRAINT fk_ledger_transaction
+  FOREIGN KEY (transaction_id) REFERENCES wager_transaction (id);
+-- self-FK anulável: uma reversão pode apontar para a transação original
+ALTER TABLE wager_transaction ADD CONSTRAINT fk_wager_reference
+  FOREIGN KEY (reference_transaction_id) REFERENCES wager_transaction (id);
+```
+
+Reversão (`down`) das FKs, antes de dropar as tabelas:
+
+```sql
+ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS fk_ledger_transaction;
+ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS fk_ledger_wallet;
+ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS fk_wager_reference;
+ALTER TABLE wager_transaction DROP CONSTRAINT IF EXISTS fk_wager_wallet;
 ```
 
 * `PROCESSED/REJECTED/FAILED` imutáveis: garantido por código (transição lança `InvalidTransactionStateError` se terminal) + trigger que bloqueia `UPDATE` que mude linha terminal + ledger sem `UPDATE/DELETE`.
