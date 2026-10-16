@@ -49,4 +49,46 @@ export class MikroOrmWalletRepository implements WalletRepository {
       updatedAt: entity.updatedAt,
     });
   }
+
+  /** `SELECT ... FOR UPDATE` na mesma tx — serializa a concorrência por `walletId`. */
+  async findByIdForUpdate(id: string): Promise<Wallet | undefined> {
+    const rows = await this.em.execute<Array<Record<string, unknown>>>(
+      `SELECT id, player_id, currency, balance_amount, balance_currency,
+              version, created_at, updated_at
+         FROM wallet WHERE id = ? FOR UPDATE`,
+      [id],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return undefined;
+    }
+    return Wallet.rehydrate({
+      id: row.id as string,
+      playerId: row.player_id as string,
+      currency: row.currency as string,
+      balance: Money.from({
+        amount: row.balance_amount as string,
+        currency: row.balance_currency as string,
+      }),
+      version: row.version as number,
+      createdAt: row.created_at as Date,
+      updatedAt: row.updated_at as Date,
+    });
+  }
+
+  /** UPDATE direto; o chamador já segurou o lock e validou as invariantes no domínio. */
+  async update(wallet: Wallet): Promise<void> {
+    await this.em.execute(
+      `UPDATE wallet
+          SET balance_amount = ?, balance_currency = ?, version = ?, updated_at = ?
+        WHERE id = ?`,
+      [
+        wallet.balance.toJSON().amount,
+        wallet.currency,
+        wallet.version,
+        wallet.updatedAt,
+        wallet.id,
+      ],
+    );
+  }
 }

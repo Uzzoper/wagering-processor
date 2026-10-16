@@ -8,11 +8,48 @@ export interface WalletRepository {
   /** `INSERT ... ON CONFLICT (player_id, currency) DO NOTHING RETURNING`; `false` = já existia. */
   insertIfAbsent(wallet: Wallet): Promise<boolean>;
   findById(id: string): Promise<Wallet | undefined>;
+  /** `SELECT ... FOR UPDATE` — serializa a concorrência por `walletId`. */
+  findByIdForUpdate(id: string): Promise<Wallet | undefined>;
+  /** Atualiza saldo/version/updatedAt; a existência já foi checada sob lock. */
+  update(wallet: Wallet): Promise<void>;
+}
+
+/** Transação lida + saldo observado guardado (para replay exato). */
+export interface StoredTransaction {
+  transaction: WagerTransaction;
+  observedBalance: Money;
+}
+
+/** Estado de `PENDING_REFERENCE` (worker resolve depois; sem ele, tudo NULL). */
+export interface PendingState {
+  retryAttempts: number;
+  pendingSince: Date;
+  nextRetryAt: Date;
 }
 
 export interface TransactionStore {
   /** Persiste o estado atual; `observedBalance` vai para as colunas dedicadas do replay. */
-  insert(transaction: WagerTransaction, observedBalance?: Money): Promise<void>;
+  insert(transaction: WagerTransaction, observedBalance?: Money, pending?: PendingState): Promise<void>;
+  /** Como `insert`, mas `ON CONFLICT DO NOTHING`: `false` = já existia (nunca captura `23505`). */
+  tryInsert(
+    transaction: WagerTransaction,
+    observedBalance?: Money,
+    pending?: PendingState,
+  ): Promise<boolean>;
+  /** Leva a linha `PENDING` ao estado final (permitido: `OLD.status` não é terminal). */
+  update(
+    transaction: WagerTransaction,
+    observedBalance?: Money,
+    pending?: PendingState,
+  ): Promise<void>;
+  findById(id: string): Promise<StoredTransaction | undefined>;
+  findByIdempotencyKey(key: string): Promise<StoredTransaction | undefined>;
+  findByProviderExternal(
+    providerId: string,
+    externalTransactionId: string,
+  ): Promise<StoredTransaction | undefined>;
+  /** Reversão `PROCESSED` existente da referência (no máximo uma, pelo índice parcial). */
+  findProcessedReversalOf(referenceTransactionId: string): Promise<StoredTransaction | undefined>;
 }
 
 export interface LedgerStore {

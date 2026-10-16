@@ -1,3 +1,4 @@
+import type { FailureCode } from './failure-code';
 import type { Money, MoneyProps } from './money';
 import type { WagerTransaction, WagerTransactionKind } from './wager-transaction';
 import type { Wallet } from './wallet';
@@ -154,6 +155,106 @@ export class WalletBalanceChanged extends IntegrationEvent<WalletBalanceChangedD
         balanceBefore: entry.balanceBefore.toJSON(),
         balanceAfter: entry.balanceAfter.toJSON(),
         walletVersion: wallet.version,
+      },
+    });
+  }
+}
+
+export interface WagerTransactionRejectedData {
+  transactionId: string;
+  walletId: string;
+  playerId: string;
+  providerId: string;
+  externalTransactionId: string;
+  kind: WagerTransactionKind;
+  money: MoneyProps;
+  failureCode: FailureCode;
+  observedBalance: MoneyProps;
+}
+
+/** Rejeição de regra de negócio — `failureCode` sempre preenchido via `reject()`. */
+export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionRejectedData> {
+  override readonly eventType = 'WagerTransactionRejected';
+  override readonly version = 1;
+
+  private constructor(props: IntegrationEventProps<WagerTransactionRejectedData>) {
+    super(props);
+  }
+
+  static from(
+    transaction: WagerTransaction,
+    observedBalance: Money,
+    ctx: EventContext,
+  ): WagerTransactionRejected {
+    if (transaction.failureCode === undefined) {
+      throw new Error('WagerTransactionRejected requires a failureCode (call reject() first)');
+    }
+    return new WagerTransactionRejected({
+      eventId: ctx.eventId ?? crypto.randomUUID(),
+      aggregateId: transaction.walletId,
+      correlationId: ctx.correlationId,
+      causationId: ctx.causationId,
+      occurredAt: ctx.occurredAt ?? new Date(),
+      data: {
+        transactionId: transaction.id,
+        walletId: transaction.walletId,
+        playerId: transaction.playerId,
+        providerId: transaction.providerId,
+        externalTransactionId: transaction.externalTransactionId,
+        kind: transaction.kind,
+        money: transaction.money.toJSON(),
+        failureCode: transaction.failureCode,
+        observedBalance: observedBalance.toJSON(),
+      },
+    });
+  }
+}
+
+export interface WagerTransactionPendingReferenceData {
+  transactionId: string;
+  walletId: string;
+  playerId: string;
+  providerId: string;
+  externalTransactionId: string;
+  kind: WagerTransactionKind;
+  money: MoneyProps;
+  referenceExternalTransactionId: string;
+  observedBalance: MoneyProps;
+}
+
+/** Referência ausente — reprocessada pelo worker com backoff. */
+export class WagerTransactionPendingReference extends IntegrationEvent<WagerTransactionPendingReferenceData> {
+  override readonly eventType = 'WagerTransactionPendingReference';
+  override readonly version = 1;
+
+  private constructor(props: IntegrationEventProps<WagerTransactionPendingReferenceData>) {
+    super(props);
+  }
+
+  static from(
+    transaction: WagerTransaction,
+    observedBalance: Money,
+    ctx: EventContext,
+  ): WagerTransactionPendingReference {
+    if (transaction.referenceExternalTransactionId === undefined) {
+      throw new Error('WagerTransactionPendingReference requires a referenceExternalTransactionId');
+    }
+    return new WagerTransactionPendingReference({
+      eventId: ctx.eventId ?? crypto.randomUUID(),
+      aggregateId: transaction.walletId,
+      correlationId: ctx.correlationId,
+      causationId: ctx.causationId,
+      occurredAt: ctx.occurredAt ?? new Date(),
+      data: {
+        transactionId: transaction.id,
+        walletId: transaction.walletId,
+        playerId: transaction.playerId,
+        providerId: transaction.providerId,
+        externalTransactionId: transaction.externalTransactionId,
+        kind: transaction.kind,
+        money: transaction.money.toJSON(),
+        referenceExternalTransactionId: transaction.referenceExternalTransactionId,
+        observedBalance: observedBalance.toJSON(),
       },
     });
   }
