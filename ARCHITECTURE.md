@@ -52,6 +52,7 @@ Criação de wallet (`POST /wallets`) segue o mesmo padrão: `CreateWalletUseCas
 
 * Todo request/worker faz `em.fork()` (um `EntityManager` por execução) e roda `em.transactional(async em => ...)` com `READ COMMITTED`.
 * Dentro da tx, ordem fixa: 1) `inbox` (só SQS), 2) insert idempotente da transação (`ON CONFLICT DO NOTHING`, ver §4), 3) `SELECT wallet ... FOR UPDATE`, 4) aplica regra de negócio em objetos de domínio puros, 5) persiste wallet + transação + ledger (se houver) + outbox. Commit único.
+* No Submit (5b): antes do insert, `SELECT` de existência da wallet — não achou → `404 WALLET_NOT_FOUND` sem persistir nada (a FK abortaria a tx com `23503`). Depois insert idempotente, depois `FOR UPDATE`.
 * Entidades MikroORM são "espelhos" finos: só colunas + índices. Regra vive no domínio; entity converte via `rehydrate` (sem revalidar) na leitura e via `toPersistence()` na escrita.
 * Nunca publicar evento, nunca fazer `ack` SQS, nunca responder HTTP antes do commit.
 * Rejeição de negócio nunca lança exceção: o use-case RETORNA `PROCESSED`, `REJECTED` ou `PENDING_REFERENCE`, a tx faz commit (persistindo a linha `REJECTED` + evento `WagerTransactionRejected`) e só a borda mapeia para HTTP `422`. Apenas erro transitório de infraestrutura lança exceção e causa rollback.
@@ -201,6 +202,8 @@ ALTER TABLE wallet_ledger_entry DROP CONSTRAINT IF EXISTS ck_ledger_direction;
 3. Canonicalização: ordena chaves recursivamente, UTF-8, sem espaços, separadores `,` e `:` padrão `JSON.stringify` canônico.
 4. `SHA-256` hex minúsculo do JSON canônico.
 
+O hash canônico vive em `application` como função pura com teste próprio: mesmo payload com ordem de campos diferente gera o mesmo hash (a borda já rejeita `25.0`, então a normalização recebe sempre 2 casas).
+
 **Fluxo (dentro da mesma tx SQL):**
 
 * Tentativa de `INSERT ... ON CONFLICT DO NOTHING` (sem alvo — cobre qualquer violação de unicidade, `idempotency_key` ou `(provider_id, external_transaction_id)`) `RETURNING ...`. Se retornou linha → somos o vencedor, segue o processamento. Se não retornou → `SELECT` por `idempotency_key` ou por `(provider_id, external_transaction_id)`: o perdedor bloqueia até o commit do vencedor e depois enxerga a linha (replay ou conflito abaixo). Motivo: no Postgres um erro de constraint (`23505`) aborta a transação inteira — `ON CONFLICT (idempotency_key)` deixaria a outra unique descoberta e o `23505` dela abortaria a tx do mesmo jeito.
@@ -285,7 +288,7 @@ Consistência travada: `400` = borda inválida; `404` = wallet inexistente; `409
 
 * Unit: `Money` (escala, `NaN/Infinity/científica/vazio/>2 casas/negativo`, cross-currency), `Wallet` (negativo, `version` só em mudança de saldo), `BET/WIN/LOSS/REFUND/ROLLBACK`, moeda, idempotency-key com payload divergente.
 * Integração: migrations/constraints, atomicidade wallet+ledger+inbox+outbox (mata processo antes/depois do commit), inbox+redelivery, publishers concorrentes na mesma outbox (`SKIP LOCKED` + lease), retry/DLQ, recovery pós-restart.
-* Concorrência (paralelismo real): 50× replay → 1 débito; 100/80×2 → 1 `PROCESSED` + 1 `INSUFFICIENT_BALANCE`, saldo `20.00`, 1 ledger; wallets distintas em paralelo; ≥3 instâncias; kill após commit antes do ack; 2 publishers mesma outbox; `REFUND` antes da referência; restart com consistência final.
+* Concorrência (paralelismo real): 50× replay → 1 débito; 100/80×2 → 1 `PROCESSED` + 1 `INSUFFICIENT_BALANCE`, saldo `20.00`, 1 ledger; wallets distintas em paralelo; ≥3 instâncias; kill após commit antes do ack; 2 publishers mesma outbox; `REFUND` antes da referência; restart com consistência final. Os dois testes obrigatórios (100/80×2 e 50× replay) pertencem à fatia 5b (Submit) — são o que prova lock e `ON CONFLICT`; sem eles a 5b não está pronta.
 * **Invariante final de todos os testes: `wallet.balance == saldo reconstruído pelo ledger`.** Helper `assertLedgerConsistency(walletId)` roda no `afterEach` dos testes de concorrência.
 
 ## 9. Trade-offs, limitações e decisões resolvidas
