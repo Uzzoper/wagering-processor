@@ -572,7 +572,7 @@ describe('domínio de wager_transaction: CHECKs', () => {
     );
   });
 
-  test('ck_wager_money_pos: rejeita money_amount <= 0', async () => {
+  test('ck_wager_money_pos: rejeita money_amount 0.00 em BET', async () => {
     const walletId = await insertWallet();
 
     await expectFailure(
@@ -581,6 +581,35 @@ describe('domínio de wager_transaction: CHECKs', () => {
         walletId,
         idempotencyKey: randomUuid(),
         moneyAmount: '0.00',
+      }),
+      { code: '23514', constraint: 'ck_wager_money_pos' },
+    );
+  });
+
+  test('ck_wager_money_pos: aceita money_amount 0.00 em LOSS', async () => {
+    const walletId = await insertWallet();
+
+    await execute(
+      transactionSql({
+        id: randomUuid(),
+        walletId,
+        idempotencyKey: randomUuid(),
+        kind: 'LOSS',
+        moneyAmount: '0.00',
+      }),
+    );
+  });
+
+  test('ck_wager_money_pos: rejeita money_amount negativo mesmo em LOSS', async () => {
+    const walletId = await insertWallet();
+
+    await expectFailure(
+      transactionSql({
+        id: randomUuid(),
+        walletId,
+        idempotencyKey: randomUuid(),
+        kind: 'LOSS',
+        moneyAmount: '-1.00',
       }),
       { code: '23514', constraint: 'ck_wager_money_pos' },
     );

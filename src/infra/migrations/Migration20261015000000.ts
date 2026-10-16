@@ -175,7 +175,7 @@ export class Migration20261015000000 extends Migration {
       `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_status CHECK (status IN ('PENDING', 'PENDING_REFERENCE', 'PROCESSED', 'REJECTED', 'FAILED'))`,
     );
     this.addSql(
-      `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_money_pos CHECK (money_amount > 0)`,
+      `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_money_pos CHECK (money_amount >= 0 AND (kind = 'LOSS' OR money_amount > 0))`,
     );
     this.addSql(
       `ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_ref_required CHECK (kind NOT IN ('REFUND', 'ROLLBACK') OR reference_external_transaction_id IS NOT NULL)`,

@@ -125,7 +125,7 @@ ALTER TABLE wallet_ledger_entry ADD CONSTRAINT ck_ledger_same_currency CHECK (
 -- domínio de wager_transaction: valores válidos
 ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_kind CHECK (kind IN ('OPENING', 'BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK'));
 ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_status CHECK (status IN ('PENDING', 'PENDING_REFERENCE', 'PROCESSED', 'REJECTED', 'FAILED'));
-ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_money_pos CHECK (money_amount > 0);
+ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_money_pos CHECK (money_amount >= 0 AND (kind = 'LOSS' OR money_amount > 0));
 ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_ref_required CHECK (kind NOT IN ('REFUND', 'ROLLBACK') OR reference_external_transaction_id IS NOT NULL);
 ALTER TABLE wager_transaction ADD CONSTRAINT ck_wager_failure_code CHECK (status NOT IN ('REJECTED', 'FAILED') OR failure_code IS NOT NULL);
 
