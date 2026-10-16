@@ -1,4 +1,5 @@
 import type { IntegrationEvent } from '../domain/events';
+import type { InboxMessage } from '../domain/inbox-message';
 import type { Money } from '../domain/money';
 import type { OutboxMessage } from '../domain/outbox-message';
 import type { WagerTransaction } from '../domain/wager-transaction';
@@ -85,12 +86,22 @@ export interface EventPublisherPort {
   publish(request: PublishRequest): Promise<void>;
 }
 
+export interface InboxStore {
+  /**
+   * Dedup persistente do consumer SQS, dento da MESMA tx do use case:
+   * `INSERT ... ON CONFLICT (consumer_name, message_id) DO NOTHING RETURNING`
+   * — `false` = redelivery da mensagem (nunca captura `23505`: abortaria a tx).
+   */
+  tryInsert(message: InboxMessage): Promise<boolean>;
+}
+
 /** Repositórios vinculados ao mesmo `EntityManager` (e à mesma tx SQL). */
 export interface Repositories {
   readonly wallets: WalletRepository;
   readonly transactions: TransactionStore;
   readonly ledger: LedgerStore;
   readonly outbox: OutboxStore;
+  readonly inbox: InboxStore;
 }
 
 export interface UnitOfWork {

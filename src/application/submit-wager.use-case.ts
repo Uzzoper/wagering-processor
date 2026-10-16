@@ -73,6 +73,15 @@ export type SubmitWagerResult =
   | SubmitWalletNotFound
   | SubmitIdempotencyConflict;
 
+export interface SubmitWagerContext {
+  /**
+   * Gancho único da entrada SQS (CHALLENGE §10): dedup persistente via inbox
+   * DENTRO da mesma tx SQL (ordem §2: inbox → insert idempotente → lock…).
+   * HTTP não usa; redelivery volta pelo caminho de replay do use case.
+   */
+  beforeRepositories?: (repositories: Repositories) => Promise<unknown>;
+}
+
 /**
  * Submete uma transação de aposta. Mesma ordem e garantias do ARCHITECTURE §2:
  * existência → insert idempotente → lock → regra no domínio → persistir → commit.
@@ -83,7 +92,10 @@ export type SubmitWagerResult =
 export class SubmitWagerTransactionUseCase {
   constructor(private readonly unitOfWork: UnitOfWork) {}
 
-  async execute(input: SubmitWagerInput): Promise<SubmitWagerResult> {
+  async execute(
+    input: SubmitWagerInput,
+    context?: SubmitWagerContext,
+  ): Promise<SubmitWagerResult> {
     const money = Money.from(input.money);
     const now = new Date();
     const correlationId = input.correlationId ?? crypto.randomUUID();
@@ -101,6 +113,9 @@ export class SubmitWagerTransactionUseCase {
     });
 
     return this.unitOfWork.run(async (repositories): Promise<SubmitWagerResult> => {
+      // Inbox (só SQS) é o passo 1 da ordem travada — antes de qualquer SQL de negócio.
+      await context?.beforeRepositories?.(repositories);
+
       const walletRow = await repositories.wallets.findById(input.walletId);
       if (walletRow === undefined) {
         return { outcome: 'WALLET_NOT_FOUND' };

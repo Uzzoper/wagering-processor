@@ -25,7 +25,7 @@ Sistema financeiro distribuído que recebe operações `BET → WIN | LOSS | REF
 | Camada | Papel | Pode importar | Não pode importar |
 |---|---|---|---|
 | `src/domain/` | `Money`, `Wallet`, `WagerTransaction`, `WalletLedgerEntry`, `InboxMessage`, `OutboxMessage`, `IntegrationEvent` + erros. Puro, sem Nest/ORM. Testável com `bun test` sem infra | `decimal.js` | `@mikro-orm/*`, `@nestjs/*` |
-| `src/application/` | Use-cases: `SubmitWagerTransaction`, `CreateWallet`, `ReconcileWallet`, `ReprocessPendingReference`. Portas: `WalletRepository`, `TransactionStore`, `LedgerStore`, `InboxStore`, `OutboxStore`, `Clock`, `IdGenerator`, `ProviderIdentityPort` | `domain` | `infra`, `api` |
+| `src/application/` | Use-cases: `SubmitWagerTransaction`, `CreateWallet`, `ReconcileWallet`, `ReprocessPendingReference`. Portas: `WalletRepository`, `TransactionStore`, `LedgerStore`, `InboxStore`, `OutboxStore`, `InboxMessage`/`OutboxMessage` no domínio, `Clock`, `IdGenerator`, `ProviderIdentityPort`, `EventPublisherPort`. Validador de entrada compartilhado (`wager-input.ts`): HTTP e SQS usam exatamente o mesmo parser (Boundary invertida: a borda HTTP só traduz `WagerInputError` → `BusinessError`) | `domain` | `infra`, `api` |
 | `src/infra/` | Entities MikroORM, migrations, repositórios, SQS consumer/publisher, workers `outbox` e `pending-reference`, logs/métricas, health checks | `domain`, `application` | — |
 | `src/api/` | Controllers, DTOs (`MoneyProps` como string), validação de entrada, mapeamento `failureCode → HTTP`, `Idempotency-Key` | `application`, `domain` (só tipos) | SQL direto |
 
@@ -34,6 +34,7 @@ Sistema financeiro distribuído que recebe operações `BET → WIN | LOSS | REF
 * Existe um único `SubmitWagerTransactionUseCase.execute(input)` que recebe um input normalizado (sem saber se veio de HTTP ou SQS).
 * `POST /wagering/transactions` apenas valida DTO + extrai `Idempotency-Key` do header e chama o use-case dentro de `em.transactional()`.
 * O consumer SQS monta o mesmo input a partir de `data` da mensagem + `messageId`, abre a mesma transação SQL (incluindo `inbox`), chama o mesmo use-case, faz commit, e só então faz `ack` (delete).
+* A entrada SQS persiste o dedup da inbox dentro da MESMA tx pelo gancho `execute(input, { beforeRepositories })` — passo 1 da ordem do §2; a borda HTTP não usa o gancho.
 * Diferença fica na borda: HTTP retorna resposta síncrona (`PROCESSED`/`REJECTED`/`PENDING_REFERENCE`/conflito); SQS classifica o erro em terminal (ack) / transitório (libera visibilidade) / permanente (DLQ). A regra de negócio nunca se bifurca.
 
 Criação de wallet (`POST /wallets`) segue o mesmo padrão: `CreateWalletUseCase` cria `Wallet` + `WagerTransaction(OPENING)` + 1 `ledger CREDIT` (se saldo > 0) + `WalletBalanceChanged` + `WagerTransactionProcessed`, tudo na mesma tx.

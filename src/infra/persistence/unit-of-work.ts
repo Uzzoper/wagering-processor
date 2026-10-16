@@ -3,6 +3,7 @@ import { MikroORM, type EntityManager } from '@mikro-orm/postgresql';
 import { Inject, Injectable } from '@nestjs/common';
 
 import type { Repositories, UnitOfWork } from '../../application/ports';
+import { MikroOrmInboxStore } from './inbox.store';
 import { MikroOrmLedgerStore } from './wallet-ledger.store';
 import { MikroOrmOutboxStore } from './outbox.store';
 import { MikroOrmTransactionStore } from './wager-transaction.store';
@@ -38,6 +39,7 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
       transactions: new MikroOrmTransactionStore(em),
       ledger: new MikroOrmLedgerStore(em),
       outbox: new MikroOrmOutboxStore(em),
+      inbox: new MikroOrmInboxStore(em),
     };
   }
 }
