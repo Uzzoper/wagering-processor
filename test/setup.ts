@@ -19,36 +19,85 @@ export const TEST_DB_NAME = process.env.DB_NAME;
 const MAINTENANCE_DB_NAME = 'wagering';
 
 /**
- * Conecta no banco de manutenção `wagering` e cria `wagering_test` se não existir.
- *
- * PostgreSQL não tem `CREATE DATABASE IF NOT EXISTS`; entre workers do `bun test`
- * a criação pode correr em paralelo, então toleramos o SQLSTATE `42P04`
- * (duplicate_database). É idempotente e roda também no `beforeAll` dos testes
- * de integração.
+ * Chave fixa do advisory lock que serializa a preparação do banco de teste
+ * entre os workers paralelos do `bun test`.
  */
-export async function ensureTestDatabase(): Promise<void> {
-  const adminOrm = await MikroORM.init(
-    buildMikroOrmConfig({ ...process.env, DB_NAME: MAINTENANCE_DB_NAME }),
-  );
+const MIGRATION_LOCK_KEY = 762_015_000;
 
+function maintenanceConfig() {
+  return buildMikroOrmConfig({ ...process.env, DB_NAME: MAINTENANCE_DB_NAME });
+}
+
+/**
+ * Recria um banco do zero (`DROP ... WITH (FORCE)` + `CREATE`). Usado pelos
+ * testes que precisam de um schema limpo e isolado.
+ */
+export async function recreateDatabase(name: string): Promise<void> {
+  const admin = await MikroORM.init(maintenanceConfig());
   try {
-    const connection = adminOrm.em.getConnection();
-    const existing = await connection.execute('SELECT 1 FROM pg_database WHERE datname = ?', [
-      TEST_DB_NAME,
-    ]);
-
-    if (existing.length === 0) {
-      try {
-        await connection.execute(`CREATE DATABASE "${TEST_DB_NAME}"`);
-      } catch (error) {
-        if ((error as { code?: string }).code !== '42P04') {
-          throw error;
-        }
-      }
-    }
+    const connection = admin.em.getConnection();
+    await connection.execute(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await connection.execute(`CREATE DATABASE "${name}"`);
   } finally {
-    await adminOrm.close(true);
+    await admin.close(true);
   }
 }
 
-await ensureTestDatabase();
+/** Remove um banco por completo (`DROP DATABASE ... WITH (FORCE)`). */
+export async function dropDatabase(name: string): Promise<void> {
+  const admin = await MikroORM.init(maintenanceConfig());
+  try {
+    await admin.em
+      .getConnection()
+      .execute(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+  } finally {
+    await admin.close(true);
+  }
+}
+
+/**
+ * Garante `wagering_test` criado e migrado UMA vez por run.
+ *
+ * Roda no preload de cada worker, que executam em paralelo: `pg_advisory_lock`
+ * numa chave fixa serializa; o primeiro worker cria o banco e aplica `up`, os
+ * demais veem a migration já aplicada (no-op). O lock é liberado no `finally`.
+ */
+async function prepareTestDatabase(): Promise<void> {
+  const admin = await MikroORM.init(maintenanceConfig());
+
+  try {
+    const connection = admin.em.getConnection();
+    await connection.execute('SELECT pg_advisory_lock(?)', [MIGRATION_LOCK_KEY]);
+
+    try {
+      const existing = await connection.execute(
+        'SELECT 1 FROM pg_database WHERE datname = ?',
+        [TEST_DB_NAME],
+      );
+
+      if (existing.length === 0) {
+        try {
+          await connection.execute(`CREATE DATABASE "${TEST_DB_NAME}"`);
+        } catch (error) {
+          // PostgreSQL não tem CREATE DATABASE IF NOT EXISTS; corrida é tolerada.
+          if ((error as { code?: string }).code !== '42P04') {
+            throw error;
+          }
+        }
+      }
+
+      const orm = await MikroORM.init(buildMikroOrmConfig());
+      try {
+        await orm.migrator.up();
+      } finally {
+        await orm.close(true);
+      }
+    } finally {
+      await connection.execute('SELECT pg_advisory_unlock(?)', [MIGRATION_LOCK_KEY]);
+    }
+  } finally {
+    await admin.close(true);
+  }
+}
+
+await prepareTestDatabase();

@@ -1,17 +1,16 @@
-import { MikroORM } from '@mikro-orm/postgresql';
+import { MikroORM, type EntityManager } from '@mikro-orm/postgresql';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 
 import { buildMikroOrmConfig } from '../../src/infra/mikro-orm.config';
-import { ensureTestDatabase } from '../setup';
 
 /**
  * Constraints contra PostgreSQL REAL (docker-compose).
  *
  * O preload `test/setup.ts` isola os testes no banco `wagering_test` (nunca o
- * `wagering` de desenvolvimento do `.env`); aqui garantimos o banco e subimos a
- * migration. Cada caso viola UMA constraint e confere `error.code` +
- * `error.constraint` (ou a mensagem, nos triggers sem constraint). No fim,
- * `down()` reverte e confirmamos que as tabelas sumiram.
+ * `wagering` de desenvolvimento do `.env`) e sobe a migration UMA vez, sob
+ * advisory lock. Aqui não rodamos `up`/`down`: cada caso viola UMA constraint e
+ * confere `error.code` + `error.constraint` (ou a coluna/mensagem quando não há
+ * constraint nomeada). O teste de `down()` vive em `migration-down.test.ts`.
  */
 
 const TABLES = [
@@ -28,6 +27,13 @@ function execute(sql: string): Promise<unknown[]> {
   return orm.em.getConnection().execute(sql);
 }
 
+interface DatabaseError {
+  code?: string;
+  constraint?: string;
+  column?: string;
+  message?: string;
+}
+
 interface FailureExpectation {
   code: string;
   /** Nome da constraint (unique/check/FK). Ausente nos triggers e no NOT NULL. */
@@ -38,21 +44,9 @@ interface FailureExpectation {
   message?: string;
 }
 
-async function expectFailure(sql: string, expected: FailureExpectation): Promise<void> {
-  let caught: unknown;
-  try {
-    await execute(sql);
-  } catch (error) {
-    caught = error;
-  }
-
+function assertFailure(caught: unknown, expected: FailureExpectation): void {
   expect(caught).toBeDefined();
-  const dbError = caught as {
-    code?: string;
-    constraint?: string;
-    column?: string;
-    message?: string;
-  };
+  const dbError = caught as DatabaseError;
   expect(dbError.code).toBe(expected.code);
 
   if (expected.constraint !== undefined) {
@@ -66,7 +60,22 @@ async function expectFailure(sql: string, expected: FailureExpectation): Promise
   }
 }
 
+async function expectFailure(sql: string, expected: FailureExpectation): Promise<void> {
+  let caught: unknown;
+  try {
+    await execute(sql);
+  } catch (error) {
+    caught = error;
+  }
+
+  assertFailure(caught, expected);
+}
+
 const randomUuid = (): string => crypto.randomUUID();
+
+function sqlLiteral(value: string | null): string {
+  return value === null ? 'NULL' : `'${value}'`;
+}
 
 // ---- SQL puro (usado nos casos de falha, sem executar) ----
 
@@ -97,7 +106,10 @@ interface TransactionValues {
   externalTransactionId?: string;
   kind?: string;
   status?: string;
+  moneyAmount?: string;
   referenceTransactionId?: string | null;
+  referenceExternalTransactionId?: string | null;
+  failureCode?: string | null;
 }
 
 function transactionSql(values: TransactionValues): string {
@@ -105,18 +117,27 @@ function transactionSql(values: TransactionValues): string {
   const externalTransactionId = values.externalTransactionId ?? randomUuid();
   const kind = values.kind ?? 'BET';
   const status = values.status ?? 'PENDING';
-  const referenceTransactionId =
-    values.referenceTransactionId === undefined || values.referenceTransactionId === null
-      ? 'NULL'
-      : `'${values.referenceTransactionId}'`;
+  const moneyAmount = values.moneyAmount ?? '10.00';
+
+  // REFUND/ROLLBACK exigem referência externa (ck_wager_ref_required).
+  const referenceExternalTransactionId =
+    values.referenceExternalTransactionId === undefined
+      ? sqlLiteral(kind === 'REFUND' || kind === 'ROLLBACK' ? randomUuid() : null)
+      : sqlLiteral(values.referenceExternalTransactionId);
+  // REJECTED/FAILED exigem failure_code (ck_wager_failure_code).
+  const failureCode =
+    values.failureCode === undefined
+      ? sqlLiteral(status === 'REJECTED' || status === 'FAILED' ? 'PROVIDER_ERROR' : null)
+      : sqlLiteral(values.failureCode);
+
   return `INSERT INTO wager_transaction (
       id, provider_id, external_transaction_id, idempotency_key, payload_hash,
       wallet_id, player_id, round_id, game_id, kind, money_amount, money_currency,
-      reference_external_transaction_id, reference_transaction_id, status, created_at
+      reference_external_transaction_id, reference_transaction_id, status, failure_code, created_at
     ) VALUES (
       '${values.id}', '${providerId}', '${externalTransactionId}', '${values.idempotencyKey}', '${randomUuid()}',
-      '${values.walletId}', '${values.playerId ?? randomUuid()}', 'round-1', 'game-1', '${kind}', '10.00', 'BRL',
-      NULL, ${referenceTransactionId}, '${status}', now()
+      '${values.walletId}', '${values.playerId ?? randomUuid()}', 'round-1', 'game-1', '${kind}', '${moneyAmount}', 'BRL',
+      ${referenceExternalTransactionId}, ${sqlLiteral(values.referenceTransactionId ?? null)}, '${status}', ${failureCode}, now()
     )`;
 }
 
@@ -164,14 +185,21 @@ function inboxSql(values: InboxValues): string {
 interface OutboxValues {
   id: string;
   eventId: string;
-  /** `null` força violação de NOT NULL; omitido usa o default `now()`. */
+  /** `null` força violação de NOT NULL; omitido usa o default `now()` da coluna. */
   nextAttemptAt?: string | null;
 }
 
 function outboxSql(values: OutboxValues): string {
-  const nextAttemptAt = values.nextAttemptAt === null ? 'NULL' : (values.nextAttemptAt ?? 'now()');
+  const columns = '(id, event_id, aggregate_id, event_type, payload, occurred_at, attempts)';
+  const base = `'${values.id}', '${values.eventId}', '${randomUuid()}', 'WagerTransactionProcessed', '{}', now(), 0`;
+
+  if (values.nextAttemptAt === undefined) {
+    return `INSERT INTO outbox_message ${columns} VALUES (${base})`;
+  }
+
+  const nextAttemptAt = values.nextAttemptAt === null ? 'NULL' : `'${values.nextAttemptAt}'`;
   return `INSERT INTO outbox_message (id, event_id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at)
-    VALUES ('${values.id}', '${values.eventId}', '${randomUuid()}', 'WagerTransactionProcessed', '{}', now(), 0, ${nextAttemptAt})`;
+    VALUES (${base}, ${nextAttemptAt})`;
 }
 
 // ---- helpers assíncronos que garantem as linhas-pai (FKs) ----
@@ -191,7 +219,10 @@ interface TransactionInsert {
   externalTransactionId?: string;
   kind?: string;
   status?: string;
+  moneyAmount?: string;
   referenceTransactionId?: string | null;
+  referenceExternalTransactionId?: string | null;
+  failureCode?: string | null;
 }
 
 /** Garante uma wallet existente quando `walletId` não é informado. */
@@ -232,9 +263,7 @@ async function insertLedger(
 
   if (options.transactionId !== undefined) {
     const walletId = options.walletId ?? (await insertWallet());
-    await execute(
-      ledgerSql({ ...options, id, walletId, transactionId: options.transactionId }),
-    );
+    await execute(ledgerSql({ ...options, id, walletId, transactionId: options.transactionId }));
     return { id, walletId, transactionId: options.transactionId };
   }
 
@@ -244,15 +273,57 @@ async function insertLedger(
   return { id, walletId, transactionId };
 }
 
+/**
+ * `ck_ledger_direction` é mascarado por `ck_ledger_balanced`: o PostgreSQL avalia
+ * os CHECK por nome e `ck_ledger_balanced` < `ck_ledger_direction` — como uma
+ * direção inválida nunca satisfaz o balanceamento, o outro CHECK sempre dispara
+ * antes. Para exercitar a constraint de direção isoladamente, derrubamos
+ * `ck_ledger_balanced` dentro de uma transação, inserimos e fazemos rollback
+ * (DDL é transacional no PostgreSQL, então o schema volta intacto).
+ */
+class RollbackProbe extends Error {}
+
+async function expectDirectionFailure(
+  buildSql: (walletId: string, transactionId: string) => string,
+): Promise<void> {
+  const { id: transactionId, walletId } = await insertTransaction();
+
+  await orm.em
+    .transactional(async (em: EntityManager) => {
+      const connection = em.getConnection();
+      const context = em.getTransactionContext();
+      await connection.execute(
+        'ALTER TABLE wallet_ledger_entry DROP CONSTRAINT ck_ledger_balanced',
+        undefined,
+        'run',
+        context,
+      );
+
+      let caught: unknown;
+      try {
+        await connection.execute(buildSql(walletId, transactionId), undefined, 'run', context);
+      } catch (error) {
+        caught = error;
+      }
+
+      assertFailure(caught, { code: '23514', constraint: 'ck_ledger_direction' });
+      // Força o rollback: restaura ck_ledger_balanced e não deixa a linha inválida.
+      throw new RollbackProbe();
+    })
+    .catch((error: unknown) => {
+      if (!(error instanceof RollbackProbe)) {
+        throw error;
+      }
+    });
+}
+
 beforeAll(async () => {
-  await ensureTestDatabase();
+  // O preload (`test/setup.ts`) já criou o banco e aplicou a migration sob lock.
   orm = await MikroORM.init(buildMikroOrmConfig());
-  await orm.migrator.up();
 });
 
 afterAll(async () => {
-  // Defensivo: garante o schema revertido mesmo se um teste falhar (idempotente).
-  await orm.migrator.down();
+  // Sem `down`: o schema é preparado uma vez no preload e reaproveitado.
   await orm.close(true);
 });
 
@@ -281,7 +352,14 @@ describe('migration: schema aplicado', () => {
       'ck_wallet_balance_currency',
       'uq_wager_idempotency',
       'uq_wager_provider_external',
+      'ck_wager_kind',
+      'ck_wager_status',
+      'ck_wager_money_pos',
+      'ck_wager_ref_required',
+      'ck_wager_failure_code',
       'uq_ledger_tx_wallet',
+      'ck_ledger_direction',
+      'ck_ledger_after_nonneg',
       'ck_ledger_amount_pos',
       'ck_ledger_balanced',
       'ck_ledger_same_currency',
@@ -313,16 +391,16 @@ describe('migration: schema aplicado', () => {
     }
   });
 
-  test('cria as funções/triggers de imutabilidade', async () => {
+  test('cria as funções/triggers de imutabilidade (incl. anti-TRUNCATE)', async () => {
     const functions = (await execute(
       `SELECT proname FROM pg_proc WHERE proname IN ('trg_ledger_immutable', 'trg_wager_terminal_immutable')`,
     )) as Array<{ proname: string }>;
     expect(functions).toHaveLength(2);
 
     const triggers = (await execute(
-      `SELECT tgname FROM pg_trigger WHERE tgname IN ('trg_ledger_immutable', 'trg_wager_terminal_immutable')`,
+      `SELECT tgname FROM pg_trigger WHERE tgname IN ('trg_ledger_immutable', 'trg_ledger_no_truncate', 'trg_wager_terminal_immutable')`,
     )) as Array<{ tgname: string }>;
-    expect(triggers).toHaveLength(2);
+    expect(triggers).toHaveLength(3);
   });
 });
 
@@ -475,7 +553,94 @@ describe('FKs: integridade referencial', () => {
   });
 });
 
-describe('ledger: aritmética e moeda', () => {
+describe('domínio de wager_transaction: CHECKs', () => {
+  test('ck_wager_kind: rejeita kind inválido', async () => {
+    const walletId = await insertWallet();
+
+    await expectFailure(
+      transactionSql({ id: randomUuid(), walletId, idempotencyKey: randomUuid(), kind: 'BOGUS' }),
+      { code: '23514', constraint: 'ck_wager_kind' },
+    );
+  });
+
+  test('ck_wager_status: rejeita status inválido', async () => {
+    const walletId = await insertWallet();
+
+    await expectFailure(
+      transactionSql({ id: randomUuid(), walletId, idempotencyKey: randomUuid(), status: 'BOGUS' }),
+      { code: '23514', constraint: 'ck_wager_status' },
+    );
+  });
+
+  test('ck_wager_money_pos: rejeita money_amount <= 0', async () => {
+    const walletId = await insertWallet();
+
+    await expectFailure(
+      transactionSql({
+        id: randomUuid(),
+        walletId,
+        idempotencyKey: randomUuid(),
+        moneyAmount: '0.00',
+      }),
+      { code: '23514', constraint: 'ck_wager_money_pos' },
+    );
+  });
+
+  test('ck_wager_ref_required: rejeita REFUND sem referência externa', async () => {
+    const walletId = await insertWallet();
+
+    await expectFailure(
+      transactionSql({
+        id: randomUuid(),
+        walletId,
+        idempotencyKey: randomUuid(),
+        kind: 'REFUND',
+        referenceExternalTransactionId: null,
+      }),
+      { code: '23514', constraint: 'ck_wager_ref_required' },
+    );
+  });
+
+  test('ck_wager_failure_code: rejeita REJECTED sem failure_code', async () => {
+    const walletId = await insertWallet();
+
+    await expectFailure(
+      transactionSql({
+        id: randomUuid(),
+        walletId,
+        idempotencyKey: randomUuid(),
+        status: 'REJECTED',
+        failureCode: null,
+      }),
+      { code: '23514', constraint: 'ck_wager_failure_code' },
+    );
+  });
+});
+
+describe('ledger: direção, aritmética e moeda', () => {
+  test('ck_ledger_direction: rejeita direção inválida', async () => {
+    await expectDirectionFailure((walletId, transactionId) =>
+      ledgerSql({ id: randomUuid(), walletId, transactionId, direction: 'BOGUS' }),
+    );
+  });
+
+  test('ck_ledger_after_nonneg: rejeita saldo final negativo', async () => {
+    const { id: transactionId, walletId } = await insertTransaction();
+
+    await expectFailure(
+      ledgerSql({
+        id: randomUuid(),
+        walletId,
+        transactionId,
+        direction: 'DEBIT',
+        amount: '5.00',
+        balanceBefore: '3.00',
+        balanceAfter: '-2.00',
+      }),
+      { code: '23514', constraint: 'ck_ledger_after_nonneg' },
+    );
+  });
+
   test('ck_ledger_amount_pos: rejeita amount <= 0', async () => {
     const { id: transactionId, walletId } = await insertTransaction();
 
@@ -558,6 +723,13 @@ describe('ledger: imutabilidade (trigger)', () => {
       message: 'is immutable',
     });
   });
+
+  test('trg_ledger_no_truncate: bloqueia TRUNCATE', async () => {
+    await expectFailure('TRUNCATE wallet_ledger_entry', {
+      code: '23001',
+      message: 'is immutable',
+    });
+  });
 });
 
 describe('wager_transaction: imutabilidade de linha terminal', () => {
@@ -594,10 +766,12 @@ describe('wager_transaction: transições de linha não-terminal passam', () => 
     await execute(`UPDATE wager_transaction SET status = 'PROCESSED' WHERE id = '${id}'`);
   });
 
-  test('PENDING_REFERENCE → REJECTED', async () => {
+  test('PENDING_REFERENCE → REJECTED (com failure_code)', async () => {
     const { id } = await insertTransaction({ status: 'PENDING_REFERENCE' });
 
-    await execute(`UPDATE wager_transaction SET status = 'REJECTED' WHERE id = '${id}'`);
+    await execute(
+      `UPDATE wager_transaction SET status = 'REJECTED', failure_code = 'PENDING_TIMEOUT' WHERE id = '${id}'`,
+    );
   });
 
   test('permite transicionar uma linha não-terminal', async () => {
@@ -677,26 +851,5 @@ describe('outbox: next_attempt_at nunca nulo', () => {
       `SELECT next_attempt_at FROM outbox_message WHERE event_id = '${eventId}'`,
     )) as Array<{ next_attempt_at: Date | string | null }>;
     expect(rows[0]?.next_attempt_at).not.toBeNull();
-  });
-});
-
-describe('migration: down() reverte tudo', () => {
-  test('remove as tabelas, as funções de trigger e as FKs', async () => {
-    await orm.migrator.down();
-
-    const tables = (await execute(
-      `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY(ARRAY['wallet','wager_transaction','wallet_ledger_entry','inbox_message','outbox_message'])`,
-    )) as Array<{ tablename: string }>;
-    expect(tables).toHaveLength(0);
-
-    const functions = (await execute(
-      `SELECT proname FROM pg_proc WHERE proname IN ('trg_ledger_immutable', 'trg_wager_terminal_immutable')`,
-    )) as Array<{ proname: string }>;
-    expect(functions).toHaveLength(0);
-
-    const foreignKeys = (await execute(
-      `SELECT conname FROM pg_constraint WHERE contype = 'f' AND conname IN ('fk_wager_wallet','fk_ledger_wallet','fk_ledger_transaction','fk_wager_reference')`,
-    )) as Array<{ conname: string }>;
-    expect(foreignKeys).toHaveLength(0);
   });
 });
