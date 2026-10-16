@@ -5,6 +5,7 @@ import type { INestApplication } from '@nestjs/common';
 import type { AddressInfo } from 'node:net';
 
 import { AppModule } from '../../src/app.module';
+import { assertLedgerConsistency } from './ledger-consistency';
 
 /**
  * `POST /wallets` + `GET /wallets/:walletId` contra PostgreSQL real, com a app
@@ -141,17 +142,7 @@ describe('POST /wallets: saldo inicial positivo', () => {
       expect(row.aggregate_id).toBe(body.id);
     }
 
-    const consistency = await query<Array<{ balance_amount: string; ledger_sum: string }>>(
-      `SELECT w.balance_amount,
-              COALESCE(SUM(CASE WHEN l.direction = 'CREDIT' THEN l.amount ELSE -l.amount END), 0) AS ledger_sum
-         FROM wallet w
-         LEFT JOIN wallet_ledger_entry l ON l.wallet_id = w.id
-        WHERE w.id = ?
-        GROUP BY w.balance_amount`,
-      [body.id],
-    );
-    expect(consistency).toHaveLength(1);
-    expect(Number(consistency[0]?.balance_amount)).toBe(Number(consistency[0]?.ledger_sum));
+    await assertLedgerConsistency(query, body.id);
   });
 });
 
@@ -229,6 +220,8 @@ describe('POST /wallets: conflito de playerId+currency', () => {
       [walletId],
     );
     expect(transactions[0]?.count).toBe(1);
+
+    await assertLedgerConsistency(query, walletId);
   });
 });
 
@@ -260,6 +253,7 @@ describe('GET /wallets/:walletId', () => {
     const response = await fetch(`${baseUrl}/wallets/${created.body.id}`);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(created.body);
+    await assertLedgerConsistency(query, created.body.id);
   });
 
   test('wallet inexistente → 404 WALLET_NOT_FOUND, sem persistir nada', async () => {

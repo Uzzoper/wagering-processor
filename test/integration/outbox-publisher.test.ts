@@ -16,6 +16,7 @@ import type { PublishRequest } from '../../src/application/ports';
 import { AppModule } from '../../src/app.module';
 import type { IntegrationEventProps } from '../../src/domain/events';
 import { IntegrationEvent } from '../../src/domain/events';
+import { assertLedgerConsistency as sharedAssertLedgerConsistency } from './ledger-consistency';
 import type { OutboxMessage } from '../../src/domain/outbox-message';
 import { MikroOrmUnitOfWork } from '../../src/infra/persistence/unit-of-work';
 import { SqsEventPublisher } from '../../src/infra/sqs/sqs-event-publisher';
@@ -215,21 +216,9 @@ async function drainQueue(
   return received;
 }
 
-/** Invariante da spec: `wallet.balance == saldo reconstruído pelo ledger`. */
+/** Wrapper fino: delega ao helper compartilhado (versão forte, com last_after). */
 async function assertLedgerConsistency(walletId: string): Promise<void> {
-  const rows = await query<
-    Array<{ balance_amount: string; ledger_sum: string | null }>
-  >(
-    `SELECT w.balance_amount,
-            SUM(CASE WHEN l.direction = 'CREDIT' THEN l.amount ELSE -l.amount END) AS ledger_sum
-       FROM wallet w
-       LEFT JOIN wallet_ledger_entry l ON l.wallet_id = w.id
-      WHERE w.id = ?
-      GROUP BY w.balance_amount`,
-    [walletId],
-  );
-  expect(rows).toHaveLength(1);
-  expect(Number(rows[0]!.balance_amount)).toBe(Number(rows[0]!.ledger_sum ?? '0.00'));
+  await sharedAssertLedgerConsistency((sql, params) => query(sql, params), walletId);
 }
 
 async function snapshotFinancials(walletId: string): Promise<FinancialSnapshot> {

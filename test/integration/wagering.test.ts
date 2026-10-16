@@ -5,6 +5,7 @@ import type { INestApplication } from '@nestjs/common';
 import type { AddressInfo } from 'node:net';
 
 import { AppModule } from '../../src/app.module';
+import { assertLedgerConsistency as sharedAssertLedgerConsistency } from './ledger-consistency';
 
 /**
  * `POST /wagering/transactions` + GETs contra PostgreSQL real, com a app
@@ -81,29 +82,9 @@ function splitInput(input: ReturnType<typeof wagerInput>) {
   return { key, body };
 }
 
-/**
- * Invariante final: `wallet.balance == soma do ledger == balance_after`
- * do último lançamento (desempate determinístico por `ctid`).
- */
+/** Wrapper fino: delega ao helper compartilhado usando o `query` deste arquivo. */
 async function assertLedgerConsistency(walletId: string): Promise<void> {
-  const rows = await query<
-    Array<{ balance_amount: string; ledger_sum: string | null; last_after: string | null }>
-  >(
-    `SELECT w.balance_amount,
-            SUM(CASE WHEN l.direction = 'CREDIT' THEN l.amount ELSE -l.amount END) AS ledger_sum,
-            (SELECT balance_after_amount FROM wallet_ledger_entry
-              WHERE wallet_id = w.id ORDER BY created_at DESC, ctid DESC LIMIT 1) AS last_after
-       FROM wallet w
-       LEFT JOIN wallet_ledger_entry l ON l.wallet_id = w.id
-      WHERE w.id = ?
-      GROUP BY w.id, w.balance_amount`,
-    [walletId],
-  );
-  expect(rows).toHaveLength(1);
-  expect(Number(rows[0]?.balance_amount)).toBe(Number(rows[0]?.ledger_sum ?? '0.00'));
-  if (rows[0]?.last_after !== null && rows[0]?.last_after !== undefined) {
-    expect(Number(rows[0]?.balance_amount)).toBe(Number(rows[0]?.last_after));
-  }
+  await sharedAssertLedgerConsistency((sql, params) => query(sql, params), walletId);
 }
 
 beforeAll(async () => {
@@ -741,6 +722,7 @@ describe('GETs de transação', () => {
       status: 'PROCESSED',
       balance: { amount: '20.00', currency: 'BRL' },
     });
+    await assertLedgerConsistency(wallet.id);
   });
 
   test('inexistente = 404 nos dois GETs', async () => {
