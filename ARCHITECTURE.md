@@ -314,3 +314,8 @@ Consistência travada: `400` = borda inválida; `404` = wallet inexistente; `409
 2. TTL 24h / 20 tentativas mantidos, configuráveis por env (`PENDING_REF_TTL_HOURS`, `PENDING_REF_MAX_ATTEMPTS`) para testes usarem TTL curto.
 3. Só a fila SQS de eventos `wager-events.fifo`. Webhook fora de escopo.
 4. `test:load` só no fim, se sobrar tempo.
+
+## Pendências por fatia (do review pós-5a — não fazer antes da hora)
+
+- Fatia 7 (mensageria): `GET /health/ready`, `InboxMessage` de domínio.
+- Fatia 8 (polimento): limpeza de docblocks (AGENTS "só onde não óbvio"), regex de escala duplicado DTO×domínio, interpretação do `Money.equals` cross-currency (hoje retorna `false`; reavaliar contra a leitura literal da spec).
