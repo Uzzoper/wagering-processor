@@ -882,3 +882,14 @@ describe('outbox: next_attempt_at nunca nulo', () => {
     expect(rows[0]?.next_attempt_at).not.toBeNull();
   });
 });
+
+describe('ledger: índice keyset da fatia 8a', () => {
+  test('idx_ledger_wallet_created_id cobre (wallet_id, created_at, id)', async () => {
+    const rows = (await execute(
+      `SELECT indexdef FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'idx_ledger_wallet_created_id'`,
+    )) as Array<{ indexdef: string }>;
+    expect(rows[0]?.indexdef).toContain('CREATE INDEX');
+    expect(rows[0]?.indexdef).toContain('wallet_id, created_at, id');
+  });
+});

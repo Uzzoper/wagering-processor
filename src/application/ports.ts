@@ -1,5 +1,7 @@
 import type { IntegrationEvent } from '../domain/events';
+import type { LedgerCursor } from './ledger-cursor';
 import type { InboxMessage } from '../domain/inbox-message';
+import type { LedgerDirection } from '../domain/wallet-ledger-entry';
 import type { Money } from '../domain/money';
 import type { OutboxMessage } from '../domain/outbox-message';
 import type { WagerTransaction } from '../domain/wager-transaction';
@@ -122,5 +124,66 @@ export interface UnitOfWork {
   read<T>(work: (repositories: Repositories) => Promise<T>): Promise<T>;
 }
 
+/** Linha do ledger para a API (`GET /wallets/:id/ledger`), dinheiro como `Money`. */
+export interface LedgerEntryRow {
+  id: string;
+  transactionId: string;
+  direction: LedgerDirection;
+  money: Money;
+  balanceBefore: Money;
+  balanceAfter: Money;
+  createdAt: Date;
+}
+
+/** Página keyset do ledger (`(created_at, id) ASC`); vazia quando nada venceu o cursor. */
+export interface LedgerPage {
+  readonly items: LedgerEntryRow[];
+  /**
+   * ISO-UTC com microssegundos da ÚLTIMA linha devolvida, presente só quando
+   * existe próxima página (look-ahead de `limit+1` no store; o Date do item
+   * perde 3 dígitos e quebraria o keyset no empate de ms).
+   */
+  readonly cursorCreatedAt: string | undefined;
+}
+
+/** Retrato da reconciliação vindo de UMA query SQL (NUMERIC como texto). */
+export interface WalletReconciliationData {
+  /** Saldo materializado (`Money` — o CHECK garante ≥ 0). */
+  storedBalance: Money;
+  /** Soma `CREDIT − DEBIT` do ledger (NUMERIC texto de 2 casas). */
+  calculatedAmount: string;
+  /** `stored − calculated` (NUMERIC texto de 2 casas; pode ser negativa). */
+  difference: string;
+  checkedEntries: number;
+}
+
+export interface WalletReadStore {
+  /**
+   * Página keyset do ledger. `undefined` = wallet inexistente (mesma
+   * semântica do `GET /wallets/:id`).
+   */
+  ledgerPage(
+    walletId: string,
+    cursor: LedgerCursor | undefined,
+    limit: number,
+  ): Promise<LedgerPage | undefined>;
+  /** Reconciliação em UMA query (a query devolve 0 linhas → 404 na borda). */
+  reconcile(walletId: string): Promise<WalletReconciliationData | undefined>;
+}
+
+/** Porta de métricas: fase 8a apenas incrementa; a 8b trará a exposição HTTP. */
+export interface MetricsPort {
+  increment(name: string): void;
+}
+
+/** Nome travado do contador de divergência de reconciliação. */
+export const RECONCILIATION_MISMATCHES_METRIC = 'reconciliation_mismatches_total';
+
+/** Limites de página do ledger (fatia 8a). */
+export const LEDGER_LIMIT_DEFAULT = 50;
+export const LEDGER_LIMIT_MAX = 200;
+
 export const UNIT_OF_WORK = Symbol('UnitOfWork');
 export const EVENT_PUBLISHER = Symbol('EventPublisherPort');
+export const WALLET_READ_STORE = Symbol('WalletReadStore');
+export const METRICS = Symbol('MetricsPort');

@@ -9,6 +9,7 @@ import { WalletModule } from './api/wallets/wallet.module';
 import { DatabaseConnection } from './infra/database/database-connection.service';
 import { buildMikroOrmConfig } from './infra/mikro-orm.config';
 import { PersistenceModule } from './infra/persistence/persistence.module';
+import { MetricsModule } from './infra/observability/metrics.module';
 import { SqsModule } from './infra/sqs/sqs.module';
 
 /**
@@ -19,6 +20,7 @@ import { SqsModule } from './infra/sqs/sqs.module';
   imports: [
     MikroOrmModule.forRoot(buildMikroOrmConfig()),
     PersistenceModule,
+    MetricsModule,
     SqsModule,
     HealthModule,
     WalletModule,

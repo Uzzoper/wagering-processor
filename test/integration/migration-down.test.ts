@@ -51,13 +51,22 @@ afterAll(async () => {
 });
 
 describe('migration: down() reverte tudo', () => {
-  test('sobe as tabelas e depois remove tabelas, funções de trigger e FKs', async () => {
+  test('sobe as tabelas e depois remove tabelas, funções de trigger, FKs e o índice keyset', async () => {
     const tablesBefore = (await execute(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY(${tablesArray})`,
     )) as Array<{ tablename: string }>;
     expect(tablesBefore).toHaveLength(TABLES.length);
 
-    await orm.migrator.down();
+    // Índice novo da fatia 8a existe ANTES do down (o down() remove).
+    const indexesBefore = (await execute(
+      `SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public' AND indexname = 'idx_ledger_wallet_created_id'`,
+    )) as Array<{ indexname: string }>;
+    expect(indexesBefore).toHaveLength(1);
+
+    // Reverte TODAS as migrations (a segunda viria a falhar: down() sem
+    // intervalo só desfaz a última — o índice separado da 8a).
+    await orm.migrator.down({ to: 0 });
 
     const tablesAfter = (await execute(
       `SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = ANY(${tablesArray})`,
@@ -73,5 +82,10 @@ describe('migration: down() reverte tudo', () => {
       `SELECT conname FROM pg_constraint WHERE contype = 'f' AND conname = ANY(${fksArray})`,
     )) as Array<{ conname: string }>;
     expect(foreignKeys).toHaveLength(0);
+
+    const indexesAfter = (await execute(
+      `SELECT indexname FROM pg_indexes WHERE indexname = 'idx_ledger_wallet_created_id'`,
+    )) as Array<{ indexname: string }>;
+    expect(indexesAfter).toHaveLength(0);
   });
 });
