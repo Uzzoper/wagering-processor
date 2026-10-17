@@ -479,7 +479,8 @@ describe('payload inválido: DLQ após maxReceiveCount', () => {
 
     // Força os redeliveries sem deletar (VisibilityTimeout 0 devolve na hora).
     // RedrivePolicy maxReceiveCount=5: após 5 recebimentos a SQS move para a DLQ.
-    const deadline = Date.now() + 60_000;
+    // Redrive sob carga chega a ~2x o normal; loop 45s + prova 10s cabem no timeout de 90s.
+    const deadline = Date.now() + 45_000;
     let inDlq = false;
     let mainHasIt = true;
     while ((!inDlq || mainHasIt) && Date.now() < deadline) {
@@ -516,7 +517,7 @@ describe('payload inválido: DLQ após maxReceiveCount', () => {
     expect((proof.Messages ?? []).map((message) => message.Body)).toContain(rawBody);
     // ...e saiu da fila principal.
     expect(mainHasIt).toBe(false);
-  }, 60_000);
+  }, 90_000);
 });
 
 describe('morte entre o commit e o ack', () => {
