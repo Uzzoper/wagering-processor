@@ -24,9 +24,9 @@ bun run index.ts
 ```bash
 bun install
 bun run start
-bun run test        # unit + integração leve (~34s)
+bun run test        # unit + integração leve (~37s)
 bun run test:crash  # multiprocesso, kill e restart (~142s)
-bun run test:all    # tudo, igual a `bun test` (~175s)
+bun run test:all    # tudo, igual a `bun test` (~178s)
 bun run migration:up / migration:down
 bun run test:load # diferencial opcional
 ```
