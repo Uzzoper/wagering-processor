@@ -26,6 +26,7 @@
 11. Ordem dentro da tx: inbox (só SQS), insert idempotente, lock da wallet (`FOR UPDATE`), regra de negócio, persistir tudo, commit. `SET LOCAL lock_timeout = '3s'` no início.
 12. Uma única reversão por referência, qualquer tipo (`REFUND` ou `ROLLBACK`), garantida pelo índice `uq_wager_single_reversal`.
 13. Outbox: claim com lease (`next_attempt_at` para frente) e `FOR UPDATE SKIP LOCKED`. Publicar só depois do commit.
+14. Worker PENDING_REFERENCE: reusa o use case de submissão via `pendingResolution` (resume, sem replay 202); renovação = attempts+1, backoff exponencial com jitter (30s→teto 1h), sem reemitir WagerTransactionPendingReference; exaustão TTL/tentativa → REJECTED REFERENCE_NOT_FOUND + evento Rejected; claim por lease + SKIP LOCKED igual à outbox.
 
 ## Onde mexer
 

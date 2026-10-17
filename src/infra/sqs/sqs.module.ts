@@ -3,17 +3,19 @@ import { Module } from '@nestjs/common';
 
 import { EVENT_PUBLISHER, UNIT_OF_WORK, type UnitOfWork } from '../../application/ports';
 import { SubmitWagerTransactionUseCase } from '../../application/submit-wager.use-case';
+import { SYSTEM_CLOCK } from '../config/clock';
 import { loadConfig } from '../config/env';
 import { OutboxPublisherWorker } from '../workers/outbox-publisher';
+import { PendingReferenceWorker } from '../workers/pending-reference-worker';
 import { SqsEventPublisher } from './sqs-event-publisher';
 import { SqsWagerConsumer } from './sqs-wager-consumer';
 
 const SQS_CLIENT = Symbol('SqsClient');
 
 /**
- * Adaptador SQS + workers (outbox publisher e consumer de transações).
- * Os workers se auto-likam em `onModuleInit` quando `WORKERS_ENABLED`
- * contém `outbox`/`sqs` (default: `api,outbox,sqs`).
+ * Adaptador SQS + workers (outbox publisher, consumer e worker de pendências).
+ * Os workers se auto-ligam em `onModuleInit` quando `WORKERS_ENABLED`
+ * contém `outbox`/`sqs`/`pending` (default: `api,outbox,sqs,pending`).
  */
 @Module({
   providers: [
@@ -69,7 +71,26 @@ const SQS_CLIENT = Symbol('SqsClient');
       },
       inject: [UNIT_OF_WORK, SQS_CLIENT],
     },
+    {
+      provide: PendingReferenceWorker,
+      useFactory: (unitOfWork: UnitOfWork) => {
+        const { pendingRef } = loadConfig();
+        return new PendingReferenceWorker(
+          unitOfWork,
+          new SubmitWagerTransactionUseCase(unitOfWork),
+          {
+            enabled: pendingRef.enabled,
+            pollIntervalMs: pendingRef.pollIntervalMs,
+            ttlHours: pendingRef.ttlHours,
+            maxAttempts: pendingRef.maxAttempts,
+            // Clone do clock default: nenhuma instância compartilha a porta.
+            clock: { ...SYSTEM_CLOCK },
+          },
+        );
+      },
+      inject: [UNIT_OF_WORK],
+    },
   ],
-  exports: [EVENT_PUBLISHER, OutboxPublisherWorker, SqsWagerConsumer],
+  exports: [EVENT_PUBLISHER, OutboxPublisherWorker, SqsWagerConsumer, PendingReferenceWorker],
 })
 export class SqsModule {}

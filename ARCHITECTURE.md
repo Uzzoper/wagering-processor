@@ -240,7 +240,9 @@ Filas: `wager-transactions.fifo` + `wager-transactions-dlq.fifo` (LocalStack) e 
 
 * Referência ausente → persiste `PENDING_REFERENCE` + evento `WagerTransactionPendingReference`, sem mexer em saldo.
 * Worker agendado a cada `30s` reprocessa pelo mesmo caminho com lock da wallet. Regras de resolução: referência `PROCESSED` → aplica a reversão e preenche `observed_balance_*` com o saldo no momento da aplicação; referência `REJECTED` → rejeita como `INVALID_REFERENCE`; referência ainda `PENDING_REFERENCE` → continua pendente (renova tentativa).
-* Limite travado e justificado: **TTL 24h e máx. 20 tentativas, backoff exponencial com jitter (30s → ... → 1h)**, configuráveis por env (`PENDING_REF_TTL_HOURS`, `PENDING_REF_MAX_ATTEMPTS`) para testes usarem TTL curto. 24h cobre atraso operacional de provedor sem virar lixo eterno; 20 tentativas com teto de 1h cabe no TTL sem spam. Esgotou → `REJECTED` com `REFERENCE_NOT_FOUND` + evento `WagerTransactionRejected`. Valor auditável, sem correção silenciosa.
+* Limite travado e justificado: **TTL 24h e máx. 20 tentativas, backoff exponencial com jitter (30s → ... → 1h)**, configuráveis por env (`PENDING_REF_TTL_HOURS`, `PENDING_REF_MAX_ATTEMPTS`; poll/lease por `PENDING_REF_POLL_INTERVAL_MS`) para testes usarem TTL curto. 24h cobre atraso operacional de provedor sem virar lixo eterno; 20 tentativas com teto de 1h cabe no TTL sem spam. Esgotou → `REJECTED` com `REFERENCE_NOT_FOUND` + evento `WagerTransactionRejected`. Valor auditável, sem correção silenciosa.
+* O worker reusa o MESMO use case de submissão via contexto `pendingResolution`: replay da linha `PENDING_REFERENCE` com essa opção entra em RESUME (lock da wallet + re-leitura anti-corrida) em vez do replay `202` do HTTP. Claim por lease + `SKIP LOCKED` igual à outbox.
+* Renovação (referência ainda pendente) incrementa `retry_attempts` + backoff com jitter **sem reemitir** `WagerTransactionPendingReference` — só o PRIMEIRO defer publica o evento; terminal final (PROCESS/REJEIT) zera as colunas de pending.
 
 ## 6. Auth (deferida)
 

@@ -12,7 +12,7 @@ export interface DatabaseConfig {
   password: string;
 }
 
-/** Quais processos este serviço roda: `WORKERS_ENABLED=api,outbox,sqs`. */
+/** Quais processos este serviço roda: `WORKERS_ENABLED=api,outbox,sqs,pending`. */
 export interface WorkersConfig {
   enabled: string[];
 }
@@ -39,12 +39,21 @@ export interface OutboxConfig {
   leaseMs: number;
 }
 
+/** Parâmetros do worker de `PENDING_REFERENCE` (claim com lease + TTL/tentativas). */
+export interface PendingRefConfig {
+  enabled: boolean;
+  pollIntervalMs: number;
+  ttlHours: number;
+  maxAttempts: number;
+}
+
 export interface AppConfig {
   port: number;
   database: DatabaseConfig;
   workers: WorkersConfig;
   sqs: SqsConfig;
   outbox: OutboxConfig;
+  pendingRef: PendingRefConfig;
 }
 
 function parsePort(value: string | undefined, fallback: number): number {
@@ -58,7 +67,7 @@ function parsePort(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
-function parsePositiveMs(value: string | undefined, fallback: number, name: string): number {
+function parsePositiveInt(value: string | undefined, fallback: number, name: string): number {
   if (value === undefined || value.trim() === '') {
     return fallback;
   }
@@ -71,7 +80,7 @@ function parsePositiveMs(value: string | undefined, fallback: number, name: stri
 
 function parseWorkersEnabled(value: string | undefined): string[] {
   if (value === undefined || value.trim() === '') {
-    return ['api', 'outbox', 'sqs'];
+    return ['api', 'outbox', 'sqs', 'pending'];
   }
   return value
     .split(',')
@@ -102,9 +111,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     outbox: {
       enabled: enabled.includes('outbox'),
-      pollIntervalMs: parsePositiveMs(env.OUTBOX_POLL_INTERVAL_MS, 500, 'OUTBOX_POLL_INTERVAL_MS'),
-      batchSize: parsePositiveMs(env.OUTBOX_BATCH_SIZE, 50, 'OUTBOX_BATCH_SIZE'),
-      leaseMs: parsePositiveMs(env.OUTBOX_LEASE_MS, 60_000, 'OUTBOX_LEASE_MS'),
+      pollIntervalMs: parsePositiveInt(env.OUTBOX_POLL_INTERVAL_MS, 500, 'OUTBOX_POLL_INTERVAL_MS'),
+      batchSize: parsePositiveInt(env.OUTBOX_BATCH_SIZE, 50, 'OUTBOX_BATCH_SIZE'),
+      leaseMs: parsePositiveInt(env.OUTBOX_LEASE_MS, 60_000, 'OUTBOX_LEASE_MS'),
+    },
+    pendingRef: {
+      enabled: enabled.includes('pending'),
+      pollIntervalMs: parsePositiveInt(
+        env.PENDING_REF_POLL_INTERVAL_MS,
+        30_000,
+        'PENDING_REF_POLL_INTERVAL_MS',
+      ),
+      // ARCHITECTURE §5: TTL 24h cobre atraso do provedor sem lixo eterno;
+      // 20 tentativas com backoff até 1h acabam antes do TTL sem spam.
+      ttlHours: parsePositiveInt(env.PENDING_REF_TTL_HOURS, 24, 'PENDING_REF_TTL_HOURS'),
+      maxAttempts: parsePositiveInt(
+        env.PENDING_REF_MAX_ATTEMPTS,
+        20,
+        'PENDING_REF_MAX_ATTEMPTS',
+      ),
     },
   };
 }
