@@ -1,6 +1,6 @@
 # ARCHITECTURE.md — Wagering Processor
 
-> Status: aprovado — guia da implementação. Spec fiel em `CHALLENGE.md` (não editar).
+> Status: implementado (fatias 1 a 8c completas). Spec fiel em `CHALLENGE.md` (não editar).
 
 ## 1. Visão geral e boundaries
 
@@ -79,8 +79,8 @@ Fundamentação para o cenário `100.00 BRL` + 2× `BET 80.00` em paralelo (e 50
 **Regras travadas:**
 
 * Unidade de concorrência = `walletId`. Nenhum lock global, nenhum mutex em memória.
-* Toda tx financeira que mexe em saldo faz `findOne(walletId, { lockMode: PESSIMISTIC_WRITE })` antes de decidir. `LOSS` (sem efeito em saldo) também pega o lock se precisar ordenar com `BET` da mesma rodada — barato e evita surpresa; `REJECTED` fora de saldo insuficiente não precisa de lock, mas o caminho de código é o mesmo para não bifurcar.
-* Ordem de locks fixa (`walletId` asc) caso um dia uma tx toque 2 wallets (hoje não há; travado: max 1 ledger por wallet por tx). Conflito de lock é métrica (`db.lock_conflicts`) e vira erro transitório com retry na borda (HTTP `503` / SQS sem ack), nunca `REJECTED` de negócio.
+* Toda tx financeira que mexe em saldo executa `SELECT ... FOR UPDATE` cru na linha da wallet (`src/infra/persistence/wallet.repository.ts`) antes de decidir. `LOSS` (sem efeito em saldo) também pega o lock se precisar ordenar com `BET` da mesma rodada — barato e evita surpresa; `REJECTED` fora de saldo insuficiente não precisa de lock, mas o caminho de código é o mesmo para não bifurcar.
+* Ordem de locks fixa (`walletId` asc) caso um dia uma tx toque 2 wallets (hoje não há; travado: max 1 ledger por wallet por tx). Conflito de lock é métrica (`db_lock_conflicts_total`) e vira erro transitório com retry na borda (HTTP `503` / SQS sem ack), nunca `REJECTED` de negócio.
 * O lock da wallet serializa concorrentes da mesma wallet, então checagens como "referência já revertida?" enxergam a linha commitada do vencedor — o índice único de reversão abaixo é a guarda final, não o caminho feliz.
 * Nunca `read → calculate → update` sem lock (falha eliminatória).
 
@@ -226,7 +226,7 @@ Filas: `wager-transactions.fifo` + `wager-transactions-dlq.fifo` (LocalStack) e 
 
 * Deduplica por inbox persistente `(consumerName='wager-sqs-consumer', messageId)` com `INSERT ... ON CONFLICT (consumer_name, message_id) DO NOTHING RETURNING` na mesma tx — pelo mesmo motivo do §4 (`23505` aborta a transação). Se não retornou linha → redelivery: retorna o efeito original sem tocar em saldo.
 * O consumer monta o input pelo mesmo validador de DTO da borda HTTP — a regra "zero só em LOSS" (e kind/`MoneyProps`/referência obrigatória) vale para as duas entradas.
-* Classificação de erro (travada): negócio (`REJECTED`, conflito idempotente, `LOSS` ok) → terminal, **ack**; transitório (PG/SQS fora, lock timeout `55P03`, deadlock `40P01`, `503`) → **não** ack, libera visibilidade com backoff, conta `sqs.retries`; permanente (payload inválido após N tentativas, `FAILED`) → DLQ após limite.
+* Classificação de erro (travada): negócio (`REJECTED`, conflito idempotente, `LOSS` ok) → terminal, **ack**; transitório (PG/SQS fora, lock timeout `55P03`, deadlock `40P01`, `503`) → **não** ack, libera visibilidade com backoff, conta `sqs_retries_total`; permanente (payload inválido após N tentativas, `FAILED`) → DLQ após limite.
 * Limite SQS: `maxReceiveCount = 5`, `visibilityTimeout = 30s` com heartbeat via `ChangeVisibility` enquanto a tx roda. Em `SIGTERM`: para de puxar, conclui o em andamento ou estende visibilidade para outro assumir (nunca ack sem commit).
 * Cenário "morreu depois do commit e antes do ack": outra instância recebe de novo, acha inbox + transação terminal, responde replay e faz ack. Sem duplo débito por construção.
 
