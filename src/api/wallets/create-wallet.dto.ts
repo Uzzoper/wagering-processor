@@ -1,4 +1,5 @@
 import { FailureCodes } from '../../domain/failure-code';
+import { isIso4217CurrencyCode } from '../../domain/currency-code';
 import type { MoneyProps } from '../../domain/money';
 import { BusinessError } from '../errors/business-error';
 
@@ -39,9 +40,8 @@ export function parseCreateWalletBody(input: unknown): CreateWalletBody {
   if (typeof amount !== 'string' || !AMOUNT.test(amount)) {
     throw invalidPayload('initialBalance.amount must match ^\\d+\\.\\d{2}$');
   }
-  // ISO-4217: exatamente 3 letras maiúsculas (o domínio revalida via `Money.from`).
-  if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) {
-    throw invalidPayload('initialBalance.currency must be ISO-4217 (3 uppercase letters)');
+  if (!isIso4217CurrencyCode(currency)) {
+    throw invalidPayload('initialBalance.currency must be an allocated ISO-4217 code');
   }
 
   return { playerId, initialBalance: { amount, currency } };

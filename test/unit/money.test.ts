@@ -64,6 +64,13 @@ describe('Money.from — entradas inválidas', () => {
     expect(() => Money.from({ amount: '25.00', currency: 'brl' })).toThrow(InvalidMoneyError);
     expect(() => Money.from({ amount: '25.00', currency: 'BRLX' })).toThrow(InvalidMoneyError);
     expect(() => Money.from({ amount: '25.00', currency: 'R$' })).toThrow(InvalidMoneyError);
+    expect(() => Money.from({ amount: '25.00', currency: 'QQQ' })).toThrow(InvalidMoneyError);
+  });
+
+  test('aceita as moedas ISO-4217 usuais do desafio', () => {
+    for (const currency of ['BRL', 'USD', 'EUR', 'JPY', 'GBP']) {
+      expect(Money.from({ amount: '25.00', currency }).currency).toBe(currency);
+    }
   });
 
   test('a rejeição é InvalidMoneyError, não erro genérico de runtime', () => {

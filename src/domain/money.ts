@@ -1,6 +1,7 @@
 import Decimal from 'decimal.js';
 
 import { CurrencyMismatchError, InvalidMoneyError } from './errors';
+import { isIso4217CurrencyCode } from './currency-code';
 
 /**
  * Formato de contrato (HTTP/SQS/eventos): decimal string com escala fixa de 2.
@@ -47,9 +48,8 @@ function assertValidAmount(amount: unknown): asserts amount is string {
 }
 
 function assertValidCurrency(currency: unknown): asserts currency is string {
-  // ISO-4217: exatamente 3 letras maiúsculas (ex.: `BRL`).
-  if (typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) {
-    throw new InvalidMoneyError('currency must be ISO-4217 (3 uppercase letters)');
+  if (!isIso4217CurrencyCode(currency)) {
+    throw new InvalidMoneyError('currency must be an allocated ISO-4217 code');
   }
 }
 

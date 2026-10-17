@@ -1,7 +1,7 @@
 import { WagerTransactionKind, type WagerTransactionKind as Kind } from '../domain/wager-transaction';
+import { isIso4217CurrencyCode } from '../domain/currency-code';
 
 const AMOUNT = /^\d+\.\d{2}$/;
-const CURRENCY = /^[A-Z]{3}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isUuid(value: string): boolean {
@@ -89,8 +89,8 @@ export function parseWagerInput(input: unknown): WagerInputBody {
   if (typeof amount !== 'string' || !AMOUNT.test(amount)) {
     throw invalidPayload('money.amount must match ^\\d+\\.\\d{2}$');
   }
-  if (typeof currency !== 'string' || !CURRENCY.test(currency)) {
-    throw invalidPayload('money.currency must be ISO-4217 (3 uppercase letters)');
+  if (!isIso4217CurrencyCode(currency)) {
+    throw invalidPayload('money.currency must be an allocated ISO-4217 code');
   }
   // Zero só em LOSS (ck_wager_money_pos); demais exigem valor positivo.
   if (kind !== WagerTransactionKind.Loss && amount === '0.00') {
