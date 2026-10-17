@@ -83,8 +83,16 @@ export class OutboxPublisherWorker implements OnModuleInit, OnApplicationShutdow
 
     // Gancho de crash recovery (teste, fatia 7d): mata o processo REAL logo
     // após o claim (lease tomado) e antes da primeira publicação — a linha
-    // volta a ficar vencida ao expirar o lease. Somente em NODE_ENV=test.
-    if (process.env.NODE_ENV === 'test' && process.env.FAULT_EXIT_AFTER_CLAIM === '1') {
+    // volta a ficar vencida ao expirar o lease. Somente em NODE_ENV=test e,
+    // se FAULT_EXIT_CLAIM_AGGREGATE estiver definido, só quando o lote contém
+    // uma linha desse aggregate (o boot pode claimar linhas alheias da suíte).
+    const faultAggregate = process.env.FAULT_EXIT_CLAIM_AGGREGATE;
+    const shouldFault =
+      process.env.NODE_ENV === 'test' &&
+      process.env.FAULT_EXIT_AFTER_CLAIM === '1' &&
+      (faultAggregate === undefined ||
+        claim.some((message) => message.aggregateId === faultAggregate));
+    if (shouldFault) {
       console.log(
         JSON.stringify({
           level: 'warn',
