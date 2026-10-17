@@ -16,6 +16,7 @@ import { assertLedgerConsistency } from './ledger-consistency';
 import { AppModule } from '../../src/app.module';
 import { CreateWalletUseCase } from '../../src/application/create-wallet.use-case';
 import type { UnitOfWork } from '../../src/application/ports';
+import { NoopProviderIdentity } from '../../src/infra/auth/noop-provider-identity';
 import { SubmitWagerTransactionUseCase } from '../../src/application/submit-wager.use-case';
 import { MikroOrmUnitOfWork } from '../../src/infra/persistence/unit-of-work';
 import {
@@ -60,7 +61,7 @@ function makeWorker(
 ): PendingReferenceWorker {
   return new PendingReferenceWorker(
     unitOfWork,
-    new SubmitWagerTransactionUseCase(unitOfWork),
+    new SubmitWagerTransactionUseCase(unitOfWork, new NoopProviderIdentity()),
     {
       enabled: true,
       pollIntervalMs: 0,
@@ -78,7 +79,7 @@ function makeConsumer(
   overrides: Partial<SqsWagerConsumerOptions> = {},
 ): SqsWagerConsumer {
   return new SqsWagerConsumer(
-    new SubmitWagerTransactionUseCase(unitOfWork),
+    new SubmitWagerTransactionUseCase(unitOfWork, new NoopProviderIdentity()),
     sqs,
     WAGER_QUEUE_NAME,
     {

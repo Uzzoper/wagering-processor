@@ -1,7 +1,7 @@
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { Module } from '@nestjs/common';
 
-import { EVENT_PUBLISHER, METRICS, UNIT_OF_WORK } from '../../application/ports';
+import { EVENT_PUBLISHER, METRICS, PROVIDER_IDENTITY, UNIT_OF_WORK } from '../../application/ports';
 import type {
   EventPublisherPort,
   MetricsPort,
@@ -13,6 +13,7 @@ import { loadConfig } from '../config/env';
 import { OutboxPublisherWorker } from '../workers/outbox-publisher';
 import { PendingReferenceWorker } from '../workers/pending-reference-worker';
 import { InstrumentedSubmitWagerUseCase } from '../observability/submit-metrics';
+import { NoopProviderIdentity } from '../auth/noop-provider-identity';
 import { SqsEventPublisher } from './sqs-event-publisher';
 import { SqsGauges } from './sqs-gauges';
 import { SqsWagerConsumer } from './sqs-wager-consumer';
@@ -31,6 +32,7 @@ export const SQS_CLIENT_TOKEN = SQS_CLIENT;
  */
 @Module({
   providers: [
+    { provide: PROVIDER_IDENTITY, useClass: NoopProviderIdentity },
     {
       provide: SQS_CLIENT,
       useFactory: () => {
@@ -81,11 +83,12 @@ export const SQS_CLIENT_TOKEN = SQS_CLIENT;
         unitOfWork: UnitOfWork,
         client: SQSClient,
         metrics: MetricsPort,
+        identity: import('../../application/ports').ProviderIdentityPort,
       ) => {
         const { sqs } = loadConfig();
         return new SqsWagerConsumer(
           new InstrumentedSubmitWagerUseCase(
-            new SubmitWagerTransactionUseCase(unitOfWork),
+            new SubmitWagerTransactionUseCase(unitOfWork, identity),
             metrics,
           ),
           client,
@@ -93,16 +96,16 @@ export const SQS_CLIENT_TOKEN = SQS_CLIENT;
           { enabled: sqs.consumerEnabled, metrics },
         );
       },
-      inject: [UNIT_OF_WORK, SQS_CLIENT, METRICS],
+      inject: [UNIT_OF_WORK, SQS_CLIENT, METRICS, PROVIDER_IDENTITY],
     },
     {
       provide: PendingReferenceWorker,
-      useFactory: (unitOfWork: UnitOfWork, metrics: MetricsPort) => {
+      useFactory: (unitOfWork: UnitOfWork, metrics: MetricsPort, identity: import('../../application/ports').ProviderIdentityPort) => {
         const { pendingRef } = loadConfig();
         return new PendingReferenceWorker(
           unitOfWork,
           new InstrumentedSubmitWagerUseCase(
-            new SubmitWagerTransactionUseCase(unitOfWork),
+            new SubmitWagerTransactionUseCase(unitOfWork, identity),
             metrics,
           ),
           {
@@ -115,7 +118,7 @@ export const SQS_CLIENT_TOKEN = SQS_CLIENT;
           },
         );
       },
-      inject: [UNIT_OF_WORK, METRICS],
+      inject: [UNIT_OF_WORK, METRICS, PROVIDER_IDENTITY],
     },
     {
       provide: 'SQS_GAUGES_DEPS',

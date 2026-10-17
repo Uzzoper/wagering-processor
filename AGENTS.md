@@ -20,7 +20,7 @@
 5. `WalletLedgerEntry`: imutável, `create` valida `before ± money == after`. `LOSS`/`REJECTED` sem lançamento. Max 1 por wallet por tx. Nunca sobrescrever/excluir.
 6. Inbox + saldo + ledger + outbox na **mesma tx SQL**. Ack SQS só pós-commit. Não publicar antes do commit.
 7. Unidade de concorrência = `walletId`. Sem lock global, sem `read-calculate-update` sem lock. Constraints de unicidade/imutabilidade/não-negatividade no schema.
-8. Auth não vale pontos: usar guard no-op / `ProviderIdentityPort`, documentar. Health aberto.
+8. Auth não vale pontos: `AuthGuard` no-op (global via `APP_GUARD`) + `ProviderIdentityPort`/`NoopProviderIdentity` (valida formato do `providerId`); identidade inválida é `INVALID_PROVIDER` (422). Health aberto.
 9. Rejeição de negócio nunca lança exceção: o use case RETORNA `PROCESSED`, `REJECTED` ou `PENDING_REFERENCE`, a transação faz commit (persistindo a linha `REJECTED` e o evento) e só a borda mapeia para HTTP. Exceção é só para erro de infraestrutura (rollback, 503).
 10. Nunca capturar 23505 dentro da transação (aborta a tx). Usar `INSERT ... ON CONFLICT DO NOTHING RETURNING` e ler a linha existente.
 11. Ordem dentro da tx: inbox (só SQS), insert idempotente, lock da wallet (`FOR UPDATE`), regra de negócio, persistir tudo, commit. `SET LOCAL lock_timeout = '3s'` no início.

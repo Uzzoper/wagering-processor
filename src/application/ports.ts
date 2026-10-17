@@ -227,6 +227,13 @@ export const RECONCILIATION_MISMATCHES_METRIC = 'reconciliation_mismatches_total
 export const LEDGER_LIMIT_DEFAULT = 50;
 export const LEDGER_LIMIT_MAX = 200;
 
+/** Porta de identidade do provedor (auth deferida; guard no-op por enquanto). */
+export interface ProviderIdentityPort {
+  resolve(providerId: string): string;
+}
+
+export const PROVIDER_IDENTITY = Symbol('ProviderIdentityPort');
+
 export const UNIT_OF_WORK = Symbol('UnitOfWork');
 export const EVENT_PUBLISHER = Symbol('EventPublisherPort');
 export const WALLET_READ_STORE = Symbol('WalletReadStore');

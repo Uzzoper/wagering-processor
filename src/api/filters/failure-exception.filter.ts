@@ -63,6 +63,7 @@ const FAILURE_HTTP_STATUS = new Map<FailureCode, number>([
   [FailureCodes.AmountMismatch, 422],
   [FailureCodes.CurrencyMismatch, 422],
   [FailureCodes.WalletOwnerMismatch, 422],
+  [FailureCodes.InvalidProvider, 422],
   [FailureCodes.InfraTransient, 503],
 ]);
 

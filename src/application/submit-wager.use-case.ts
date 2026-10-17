@@ -1,5 +1,6 @@
 import {
   AmountMismatchError,
+  InvalidProviderIdentityError,
   InvalidReferenceError,
   ReversalWouldOverdrawError,
 } from '../domain/errors';
@@ -25,7 +26,7 @@ import {
   pendingRefExpired,
 } from '../domain/pending-reference-policy';
 import { payloadHash } from './payload-hash';
-import type { Repositories, StoredTransaction, UnitOfWork } from './ports';
+import type { ProviderIdentityPort, Repositories, StoredTransaction, UnitOfWork } from './ports';
 
 export interface SubmitWagerInput {
   idempotencyKey: string;
@@ -116,7 +117,10 @@ export interface SubmitWagerCommands {
  * referência presente em REFUND/ROLLBACK) — a violação aqui seria bug de borda.
  */
 export class SubmitWagerTransactionUseCase {
-  constructor(private readonly unitOfWork: UnitOfWork) {}
+  constructor(
+    private readonly unitOfWork: UnitOfWork,
+    private readonly providerIdentity: ProviderIdentityPort,
+  ) {}
 
   async execute(
     input: SubmitWagerInput,
@@ -366,6 +370,24 @@ export class SubmitWagerTransactionUseCase {
         now,
         correlationId,
       );
+    }
+
+    // Identidade do provedor (auth deferida): formato validado pela porta.
+    // Rejeição de negócio, não exceção — persiste a linha REJECTED.
+    try {
+      this.providerIdentity.resolve(input.providerId);
+    } catch (error) {
+      if (error instanceof InvalidProviderIdentityError) {
+        return this.reject(
+          repositories,
+          transaction,
+          wallet.balance,
+          FailureCodes.InvalidProvider,
+          now,
+          correlationId,
+        );
+      }
+      throw error;
     }
 
     switch (input.kind) {

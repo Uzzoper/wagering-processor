@@ -119,6 +119,6 @@ infra/          # localstack-init.sh (cria as filas FIFO do compose)
 
 ## O que ficou fora
 
-- Auth real: não implementada; a identidade do provider é validada pelo mesmo parser de entrada do domínio e o ponto de extensão é um guard NestJS (não vale pontos no desafio).
+- Auth real: não implementada; existe o ponto de extensão `ProviderIdentityPort` + `AuthGuard` no-op (global) + `NoopProviderIdentity` (valida formato do `providerId`; identidade inválida vira `INVALID_PROVIDER` 422). Substituir o guard por OIDC não toca no use case (não vale pontos no desafio).
 - `bun run test:load`: diferencial opcional do desafio, não implementado.
 - Double-entry completo e CDC: fora do escopo inicial (ver trade-offs no ARCHITECTURE.md).

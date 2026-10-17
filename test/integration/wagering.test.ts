@@ -420,6 +420,26 @@ describe('POST /wagering/transactions: rejeições de negócio', () => {
     expect(mismatch.body.failureCode).toBe('CURRENCY_MISMATCH');
     await assertLedgerConsistency(wallet.id);
   });
+
+  test('providerId malformado = 422 INVALID_PROVIDER, linha REJECTED persistida', async () => {
+    const playerId = crypto.randomUUID();
+    const wallet = await postWallet(playerId, '100.00');
+
+    const { key, body } = splitInput(
+      wagerInput(playerId, wallet.id, { providerId: 'a'.repeat(129) }),
+    );
+    const { status, body: result } = await postWager(body, key);
+    expect(status).toBe(422);
+    expect(result.status).toBe('REJECTED');
+    expect(result.failureCode).toBe('INVALID_PROVIDER');
+
+    const rows = await query<Array<{ count: number }>>(
+      `SELECT count(*)::int AS count FROM wager_transaction WHERE id = ? AND status = 'REJECTED'`,
+      [result.transactionId],
+    );
+    expect(rows[0]?.count).toBe(1);
+    await assertLedgerConsistency(wallet.id);
+  });
 });
 
 describe('POST /wagering/transactions: referências', () => {

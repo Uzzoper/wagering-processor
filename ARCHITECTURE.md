@@ -249,15 +249,18 @@ Filas: `wager-transactions.fifo` + `wager-transactions-dlq.fifo` (LocalStack) e 
 * `FAULT_EXIT_AFTER_COMMIT=1` mata o processo em `src/infra/sqs/sqs-wager-consumer.ts` exatamente depois do commit da tx da mensagem e antes do primeiro `DeleteMessage`; `FAULT_EXIT_AFTER_CLAIM=1` mata em `src/infra/workers/outbox-publisher.ts` logo após o claim (lease tomado) e antes da primeira publicação — o publisher aceita `FAULT_EXIT_CLAIM_AGGREGATE=<id>` para disparar só quando o lote claimado contém uma linha desse aggregate (o boot pode claimar linhas alheias da suíte). Ambos logam `test.fault_exit` e só existem em `NODE_ENV=test` (nunca ativam fora dele), mutando o processo real para provar morte entre commit/ack e claim/publicação — a redelivery entra pelo replay via inbox e o lease da outbox expira e é assumido.
 * Complemento do `src/main.ts` (descoberto nos testes 7d): em modo **somente worker** (`sqs`/`outbox`/`pending` sem `api`) não há listener HTTP e o event loop do Bun encerra o processo logo após os hooks — o `main.ts` instala um keepalive (`setInterval` enorme) para o worker ficar vivo. Em qualquer modo, `SIGTERM` no processo filho encerra com exit 0 determinístico: a invariante "nada perdido" vem do banco (redelivery/replay via inbox, lease da outbox), não do shutdown gracioso, e os workers são responsáveis por chamar os próprios loops gravidamente via `OnApplicationShutdown` quando aplicável.
 
-## 6. Auth (deferida)
+## 6. Auth (deferida, ponto de extensão implementado)
 
 **Decisão: deferir auth real. Não vale pontos; não pode competir com correção financeira.**
 
-* Travado: `AuthGuard` no-op no Nest + `ProviderIdentityPort` (interface) com implementação `NoopProviderIdentity` que aceita `providerId` do payload e valida apenas formato/pertencimento (mesmo provider/player/wallet/moeda/round da regra de domínio).
-* Ponto de extensão explícito: trocar o provider do guard por OIDC (Keycloak/Zitadel) exige só implementar a porta, sem tocar use-case.
-* `GET /health/live` e `GET /health/ready` abertos, sem guard.
+O ponto de extensão existe no código, sem mudar comportamento:
+
+* `ProviderIdentityPort` em `src/application/ports.ts` (método `resolve(providerId): string`); implementação `NoopProviderIdentity` em `src/infra/auth/noop-provider-identity.ts` aceita o `providerId` do payload e valida apenas o formato (não vazio, tamanho máximo). Identidade inválida é rejeição de negócio: `INVALID_PROVIDER` (`422`), com linha `REJECTED` persistida e evento `WagerTransactionRejected`.
+* `AuthGuard` no-op em `src/api/auth/auth.guard.ts`, registrado como guard global via `APP_GUARD` no `app.module`. Sempre permite; a segurança real (OIDC Keycloak/Zitadel, validação de JWT e extração do provedor do subject) substitui este guard sem tocar no use case.
+* A submissão (`SubmitWagerTransactionUseCase`) e o consumer SQS passam o `providerId` pela porta antes de usar — a identidade dentro da mensagem continua sujeita às mesmas validações de domínio.
+* `GET /health/live`, `GET /health/ready` e `GET /metrics` abertos, sem guard.
 * Fila SQS tratada como canal interno confiável, mas identidade do provedor dentro da mensagem passa pelas mesmas validações de domínio (não confiamos cegamente).
-* Documentado aqui para a apresentação: desenho futuro seria `AuthorizationCode + JWT do IdP`, `providerId = subject`, escopo por wallet; hoje o risco é assumido e isolado na borda.
+* Desenho futuro: `AuthorizationCode + JWT do IdP`, `providerId = subject`, escopo por wallet; hoje o risco é assumido e isolado na borda.
 
 ## 7. Taxonomia de `failureCode` e HTTP
 

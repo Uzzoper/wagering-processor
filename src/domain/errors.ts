@@ -117,3 +117,13 @@ export class UnbalancedLedgerEntryError extends Error {
     this.name = 'UnbalancedLedgerEntryError';
   }
 }
+
+/** Identidade de provedor inválida (formato) — ponto de extensão de auth (guard no-op). */
+export class InvalidProviderIdentityError extends Error {
+  readonly code = 'INVALID_PROVIDER_IDENTITY' as const;
+
+  constructor(readonly providerId: string) {
+    super(`Invalid provider identity: "${providerId}"`);
+    this.name = 'InvalidProviderIdentityError';
+  }
+}

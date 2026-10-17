@@ -18,6 +18,7 @@ import { assertLedgerConsistency } from './ledger-consistency';
 import { AppModule } from '../../src/app.module';
 import { CreateWalletUseCase } from '../../src/application/create-wallet.use-case';
 import type { UnitOfWork } from '../../src/application/ports';
+import { NoopProviderIdentity } from '../../src/infra/auth/noop-provider-identity';
 import { SubmitWagerTransactionUseCase } from '../../src/application/submit-wager.use-case';
 import { MikroOrmUnitOfWork } from '../../src/infra/persistence/unit-of-work';
 import { SqsWagerConsumer, type SqsWagerConsumerOptions } from '../../src/infra/sqs/sqs-wager-consumer';
@@ -65,7 +66,7 @@ let queueUrl: string;
 let dlqUrl: string;
 
 function makeConsumer(overrides: Partial<SqsWagerConsumerOptions> = {}): SqsWagerConsumer {
-  const useCase = new SubmitWagerTransactionUseCase(unitOfWork);
+  const useCase = new SubmitWagerTransactionUseCase(unitOfWork, new NoopProviderIdentity());
   return new SqsWagerConsumer(useCase, sqs, WAGER_QUEUE_NAME, testOptions(overrides));
 }
 

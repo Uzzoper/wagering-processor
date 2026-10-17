@@ -17,6 +17,7 @@ export const FailureCodes = {
   WalletNotFound: 'WALLET_NOT_FOUND',
   TransactionNotFound: 'TRANSACTION_NOT_FOUND',
   InvalidPayload: 'INVALID_PAYLOAD',
+  InvalidProvider: 'INVALID_PROVIDER',
   PendingReference: 'PENDING_REFERENCE',
   InfraTransient: 'INFRA_TRANSIENT',
 } as const;
