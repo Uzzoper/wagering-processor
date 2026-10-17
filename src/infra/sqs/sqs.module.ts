@@ -12,6 +12,9 @@ import { SqsWagerConsumer } from './sqs-wager-consumer';
 
 const SQS_CLIENT = Symbol('SqsClient');
 
+/** Token do client SQS compartilhado (health/ready e métricas de gauge). */
+export const SQS_CLIENT_TOKEN = SQS_CLIENT;
+
 /**
  * Adaptador SQS + workers (outbox publisher, consumer e worker de pendências).
  * Os workers se auto-ligam em `onModuleInit` quando `WORKERS_ENABLED`
@@ -91,6 +94,6 @@ const SQS_CLIENT = Symbol('SqsClient');
       inject: [UNIT_OF_WORK],
     },
   ],
-  exports: [EVENT_PUBLISHER, OutboxPublisherWorker, SqsWagerConsumer, PendingReferenceWorker],
+  exports: [SQS_CLIENT_TOKEN, EVENT_PUBLISHER, OutboxPublisherWorker, SqsWagerConsumer, PendingReferenceWorker],
 })
 export class SqsModule {}
