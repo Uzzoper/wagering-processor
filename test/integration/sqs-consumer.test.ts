@@ -430,6 +430,66 @@ describe('payload inválido: permanente, NÃO deleta', () => {
   }, 60_000);
 });
 
+describe('payload inválido: DLQ após maxReceiveCount', () => {
+  test('mensagem inválida para na wager-transactions-dlq.fifo e sai da principal', async () => {
+    await purgeQueue();
+    const dlq = await sqs.send(new GetQueueUrlCommand({ QueueName: 'wager-transactions-dlq.fifo' }));
+    const dlqUrl = dlq.QueueUrl!;
+    await sqs.send(new PurgeQueueCommand({ QueueUrl: dlqUrl }));
+
+    // Corpo que nunca parseia: sem messageId, sem inbox, sem efeito — só redrive.
+    const rawBody = `{not json ${crypto.randomUUID()}`;
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: rawBody,
+        MessageGroupId: crypto.randomUUID(),
+        MessageDeduplicationId: `dlq-${crypto.randomUUID()}`,
+      }),
+    );
+
+    // Força os redeliveries sem deletar (VisibilityTimeout 0 devolve na hora).
+    // RedrivePolicy maxReceiveCount=5: após 5 recebimentos a SQS move para a DLQ.
+    const deadline = Date.now() + 30_000;
+    let inDlq = false;
+    let mainHasIt = true;
+    while ((!inDlq || mainHasIt) && Date.now() < deadline) {
+      const received = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          MaxNumberOfMessages: 1,
+          WaitTimeSeconds: 1,
+          VisibilityTimeout: 0,
+        }),
+      );
+      mainHasIt = (received.Messages ?? []).some((message) => message.Body === rawBody);
+
+      // VisibilityTimeout 0 nas sondagens: não esconde a mensagem da prova final.
+      const dlqMessages = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: dlqUrl,
+          MaxNumberOfMessages: 10,
+          WaitTimeSeconds: 1,
+          VisibilityTimeout: 0,
+        }),
+      );
+      inDlq = (dlqMessages.Messages ?? []).some((message) => message.Body === rawBody);
+    }
+
+    // Prova lendo a DLQ: o corpo é byte-idêntico ao enviado...
+    const proof = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: dlqUrl,
+        MaxNumberOfMessages: 10,
+        WaitTimeSeconds: 5,
+      }),
+    );
+    expect((proof.Messages ?? []).map((message) => message.Body)).toContain(rawBody);
+    // ...e saiu da fila principal.
+    expect(mainHasIt).toBe(false);
+  }, 60_000);
+});
+
 describe('morte entre o commit e o ack', () => {
   test('fault no ack → redelivery entra pelo replay sem duplicar efeito', async () => {
     await purgeQueue();
