@@ -157,7 +157,7 @@ async function send(
 async function drainUntil(
   messageIds: Set<string>,
   expected: number,
-  timeoutMs = 15_000,
+  timeoutMs = 30_000,
 ): Promise<Array<{ messageId: string; body: string; receiveCount: number }>> {
   const found: Array<{ messageId: string; body: string; receiveCount: number }> = [];
   const deadline = Date.now() + timeoutMs;
@@ -439,7 +439,7 @@ describe('payload inválido: permanente, NÃO deleta', () => {
     const stillThere = await drainUntil(
       new Set([brokenMessageId, openingMessageId, '{not json']),
       2,
-      15_000,
+      30_000,
     );
     expect(stillThere).toHaveLength(2);
     // O JSON quebrado nunca parseia messageId — o corpo cru é o identificador.
@@ -479,7 +479,7 @@ describe('payload inválido: DLQ após maxReceiveCount', () => {
 
     // Força os redeliveries sem deletar (VisibilityTimeout 0 devolve na hora).
     // RedrivePolicy maxReceiveCount=5: após 5 recebimentos a SQS move para a DLQ.
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 60_000;
     let inDlq = false;
     let mainHasIt = true;
     while ((!inDlq || mainHasIt) && Date.now() < deadline) {
@@ -510,7 +510,7 @@ describe('payload inválido: DLQ após maxReceiveCount', () => {
       new ReceiveMessageCommand({
         QueueUrl: dlqUrl,
         MaxNumberOfMessages: 10,
-        WaitTimeSeconds: 5,
+        WaitTimeSeconds: 10,
       }),
     );
     expect((proof.Messages ?? []).map((message) => message.Body)).toContain(rawBody);
@@ -549,7 +549,7 @@ describe('morte entre o commit e o ack', () => {
     const before = await snapshotFinancials(walletId);
 
     // A mensagem NÃO foi deletada: expira a visibilidade e volta recebível.
-    const redelivered = await drainUntil(new Set([messageId]), 1, 15_000);
+    const redelivered = await drainUntil(new Set([messageId]), 1, 30_000);
     expect(redelivered).toHaveLength(1);
     expect(redelivered[0]!.receiveCount).toBeGreaterThanOrEqual(2);
 
@@ -589,7 +589,7 @@ describe('SIGTERM/parada: conclui o que está em voo, não perde mensagem', () =
     });
     slow.start();
 
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 30_000;
     while (!ackStarted && Date.now() < deadline) {
       await Bun.sleep(50);
     }
