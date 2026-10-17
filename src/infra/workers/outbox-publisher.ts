@@ -81,6 +81,21 @@ export class OutboxPublisherWorker implements OnModuleInit, OnApplicationShutdow
       return 0;
     }
 
+    // Gancho de crash recovery (teste, fatia 7d): mata o processo REAL logo
+    // após o claim (lease tomado) e antes da primeira publicação — a linha
+    // volta a ficar vencida ao expirar o lease. Somente em NODE_ENV=test.
+    if (process.env.NODE_ENV === 'test' && process.env.FAULT_EXIT_AFTER_CLAIM === '1') {
+      console.log(
+        JSON.stringify({
+          level: 'warn',
+          event: 'test.fault_exit',
+          stage: 'after_claim_before_publish',
+          claimed: claim.length,
+        }),
+      );
+      process.exit(137);
+    }
+
     let published = 0;
     for (const message of claim) {
       // Sequencial para preservar a ordem de occurredAt por MessageGroupId.

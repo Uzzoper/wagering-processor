@@ -229,6 +229,17 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
       reply: 'replay' in result ? result.replay : undefined,
     });
 
+    // Gancho de crash recovery (teste, fatia 7d): mata o processo REAL exatamente
+    // depois do commit e antes do primeiro DELETE — a redelivery entra pelo replay
+    // via inbox. Somente em NODE_ENV=test, nunca em produção.
+    if (process.env.NODE_ENV === 'test' && process.env.FAULT_EXIT_AFTER_COMMIT === '1') {
+      this.log('warn', 'test.fault_exit', {
+        messageId: envelope.messageId,
+        stage: 'after_commit_before_ack',
+      });
+      process.exit(137);
+    }
+
     // Commit aconteceu — terminal (PROCESSED/REJECTED/PENDING_REFERENCE/
     // WALLET_NOT_FOUND/conflito/dedup): ack agora. beforeAck (fault injection)
     // lançando = morte pós-commit: a mensagem fica recebível para replay.

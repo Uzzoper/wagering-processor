@@ -244,6 +244,10 @@ Filas: `wager-transactions.fifo` + `wager-transactions-dlq.fifo` (LocalStack) e 
 * O worker reusa o MESMO use case de submissão via contexto `pendingResolution`: replay da linha `PENDING_REFERENCE` com essa opção entra em RESUME (lock da wallet + re-leitura anti-corrida) em vez do replay `202` do HTTP. Claim por lease + `SKIP LOCKED` igual à outbox.
 * Renovação (referência ainda pendente) incrementa `retry_attempts` + backoff com jitter **sem reemitir** `WagerTransactionPendingReference` — só o PRIMEIRO defer publica o evento; terminal final (PROCESS/REJEIT) zera as colunas de pending.
 
+**Ganchos de crash recovery (exclusivos de teste, fatia 7d):**
+
+* `FAULT_EXIT_AFTER_COMMIT=1` mata o processo em `src/infra/sqs/sqs-wager-consumer.ts` exatamente depois do commit da tx da mensagem e antes do primeiro `DeleteMessage`; `FAULT_EXIT_AFTER_CLAIM=1` mata em `src/infra/workers/outbox-publisher.ts` logo após o claim (lease tomado) e antes da primeira publicação. Ambos logam `test.fault_exit` e só existem em `NODE_ENV=test` (nunca ativam fora dele), mutando o processo real para provar morte entre commit/ack e claim/publicação — a redelivery entra pelo replay via inbox e o lease da outbox expira e é assumido.
+
 ## 6. Auth (deferida)
 
 **Decisão: deferir auth real. Não vale pontos; não pode competir com correção financeira.**
@@ -323,5 +327,5 @@ Consistência travada: `400` = borda inválida; `404` = wallet inexistente; `409
 
 ## Pendências por fatia (do review pós-5a — não fazer antes da hora)
 
-- Fatia 7 (mensageria): `GET /health/ready`, `InboxMessage` de domínio.
+- ✓ Fatia 7 (mensageria): `GET /health/ready`, `InboxMessage` de domínio, tests de crash recovery via ganchos `FAULT_*` (commit/ack e claim/publicação, fatia 7d).
 - Fatia 8 (polimento): limpeza de docblocks (AGENTS "só onde não óbvio"), regex de escala duplicado DTO×domínio, interpretação do `Money.equals` cross-currency (hoje retorna `false`; reavaliar contra a leitura literal da spec).
