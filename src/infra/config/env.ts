@@ -4,6 +4,8 @@
  * Nenhum segredo é logado — apenas host/porta/database são não-sensíveis o suficiente para log.
  */
 
+import type { LogLevelName } from '../observability/json-logger';
+
 export interface DatabaseConfig {
   host: string;
   port: number;
@@ -54,6 +56,19 @@ export interface AppConfig {
   sqs: SqsConfig;
   outbox: OutboxConfig;
   pendingRef: PendingRefConfig;
+  logLevel: LogLevelName;
+}
+
+const LOG_LEVELS = ['debug', 'info', 'error', 'silent'] as const;
+
+function parseLogLevel(value: string | undefined, fallback: LogLevelName): LogLevelName {
+  if (value === undefined || value.trim() === '') {
+    return fallback;
+  }
+  if ((LOG_LEVELS as readonly string[]).includes(value)) {
+    return value as LogLevelName;
+  }
+  throw new Error(`LOG_LEVEL inválido: "${value}" (use debug|info|error|silent)`);
 }
 
 function parsePort(value: string | undefined, fallback: number): number {
@@ -92,6 +107,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const enabled = parseWorkersEnabled(env.WORKERS_ENABLED);
   return {
     port: parsePort(env.PORT, 3000),
+    logLevel: parseLogLevel(env.LOG_LEVEL, 'info'),
     database: {
       host: env.DB_HOST ?? 'localhost',
       port: parsePort(env.DB_PORT, 5433),

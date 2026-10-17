@@ -44,13 +44,13 @@ export class ReconcileWalletUseCase {
     const consistent = snapshot.difference === '0.00';
     if (!consistent) {
       this.metrics.increment(RECONCILIATION_MISMATCHES_METRIC);
+      // Aplicação é pura: sem import de infra — console direto no formato da casa.
+      // Sem saldos monetários (§12): o log só identifica a wallet e a divergência.
       console.error(
         JSON.stringify({
           level: 'error',
           event: 'reconciliation.mismatch',
           walletId,
-          stored: snapshot.storedBalance.toJSON().amount,
-          calculated: snapshot.calculatedAmount,
           difference: snapshot.difference,
         }),
       );

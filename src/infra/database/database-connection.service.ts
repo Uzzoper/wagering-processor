@@ -1,12 +1,9 @@
 import { MikroORM } from '@mikro-orm/core';
 import { Inject, Injectable, type OnApplicationBootstrap } from '@nestjs/common';
 
-const CONNECT_TIMEOUT_MS = 3_000;
+import { logEvent } from '../observability/json-logger';
 
-function logJson(record: Record<string, unknown>): void {
-  // Log estruturado de uma linha. Nunca inclui user/password.
-  console.log(JSON.stringify(record));
-}
+const CONNECT_TIMEOUT_MS = 3_000;
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -46,14 +43,12 @@ export class DatabaseConnection implements OnApplicationBootstrap {
       const check = await withTimeout(this.orm.em.getConnection().checkConnection(), CONNECT_TIMEOUT_MS);
 
       if (check.ok) {
-        logJson({ level: 'info', event: 'database.connected', ...context });
+        logEvent('info', 'database.connected', context);
       } else {
-        logJson({ level: 'warn', event: 'database.connect_failed', reason: check.reason, ...context });
+        logEvent('warn', 'database.connect_failed', { reason: check.reason, ...context });
       }
     } catch (error) {
-      logJson({
-        level: 'warn',
-        event: 'database.connect_failed',
+      logEvent('warn', 'database.connect_failed', {
         reason: error instanceof Error ? error.message : String(error),
         ...context,
       });

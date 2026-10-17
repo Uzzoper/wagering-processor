@@ -10,6 +10,7 @@ import {
   type SQSClient,
 } from '@aws-sdk/client-sqs';
 
+import { logEvent } from '../observability/json-logger';
 import {
   SubmitWagerTransactionUseCase,
   type SubmitWagerInput,
@@ -368,6 +369,6 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     event: string,
     fields: Record<string, unknown>,
   ): void {
-    console.log(JSON.stringify({ level, event, ...fields }));
+    logEvent(level, event, fields);
   }
 }

@@ -6,6 +6,7 @@ import {
 } from '../../application/submit-wager.use-case';
 import type { Clock, StoredTransaction, UnitOfWork } from '../../application/ports';
 import { SYSTEM_CLOCK } from '../config/clock';
+import { logEvent } from '../observability/json-logger';
 
 export interface PendingReferenceWorkerOptions {
   /** `WORKERS_ENABLED` contém `pending`. */
@@ -117,18 +118,14 @@ export class PendingReferenceWorker implements OnModuleInit, OnApplicationShutdo
             maxAttempts: this.options.maxAttempts,
           },
         });
-        console.log(
-          JSON.stringify({
-            level: 'info',
-            event: 'pending_ref.processed',
-            transactionId: row.transaction.id,
-            walletId: row.transaction.walletId,
-            providerId: row.transaction.providerId,
-            correlationId: `pending-${row.transaction.id}`,
-            outcome: result.outcome,
-            failureCode: result.outcome === 'REJECTED' ? result.failureCode : undefined,
-          }),
-        );
+        logEvent('info', 'pending_ref.processed', {
+          transactionId: row.transaction.id,
+          walletId: row.transaction.walletId,
+          providerId: row.transaction.providerId,
+          correlationId: `pending-${row.transaction.id}`,
+          outcome: result.outcome,
+          failureCode: result.outcome === 'REJECTED' ? result.failureCode : undefined,
+        });
       } catch (error) {
         this.log('error', 'pending_ref.failed', {
           transactionId: row.transaction.id,
@@ -189,6 +186,6 @@ export class PendingReferenceWorker implements OnModuleInit, OnApplicationShutdo
     event: string,
     fields: Record<string, unknown>,
   ): void {
-    console.log(JSON.stringify({ level, event, ...fields }));
+    logEvent(level, event, fields);
   }
 }

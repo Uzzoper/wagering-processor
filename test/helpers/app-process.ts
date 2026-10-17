@@ -16,6 +16,8 @@ export interface SpawnedApp {
   kill(signal: 'SIGTERM' | 'SIGKILL'): void;
   /** Shutdown limpo: SIGTERM e espera o `exited` do processo. */
   stop(): Promise<number>;
+  /** stdout completo (só com `silent: false`): linhas JSON do logger. */
+  stdoutText(): Promise<string>;
 }
 
 export interface SpawnAppOptions {
@@ -24,6 +26,11 @@ export interface SpawnAppOptions {
   workers: string;
   /** Extras exclusive do cenário (SQS_WAGER_QUEUE, FAULT_*, leases curtos…). */
   env?: Record<string, string | undefined>;
+  /**
+   * `false` captura o stdout do filho (suíte de logs da fatia 8b); default
+   * `silent` descarta (outras suítes rodam com `LOG_LEVEL=silent` via preload).
+   */
+  silent?: boolean;
 }
 
 /** Filhos vivos da suíte: no exit do runner (mesmo com teste falhado ou
@@ -71,11 +78,17 @@ export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
       NODE_ENV: 'test',
       ...options.env,
     },
-    stdout: 'ignore',
+    stdout: options.silent === false ? 'pipe' : 'ignore',
     stderr: 'inherit',
   });
   ALIVE.add(proc);
   void proc.exited.then(() => ALIVE.delete(proc));
+
+  // Suíte de logs: acumula as linhas JSON do stdout enquanto o app vive.
+  const stdoutChunks: Uint8Array[] = [];
+  if (options.silent === false && proc.stdout) {
+    void collectStream(proc.stdout, stdoutChunks);
+  }
 
   const deadline = Date.now() + 20_000;
   for (;;) {
@@ -136,7 +149,38 @@ export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
       }
       return Number(await Promise.race([proc.exited, Bun.sleep(3_000).then(() => -1)]));
     },
+    async stdoutText() {
+      return new TextDecoder().decode(concatChunks(stdoutChunks));
+    },
   };
+}
+
+async function collectStream(stream: ReadableStream<Uint8Array>, chunks: Uint8Array[]): Promise<void> {
+  try {
+    const reader = stream.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value !== undefined) {
+        chunks.push(value);
+      }
+    }
+  } catch {
+    // stream fechado no kill: o que chegou basta para os asserts dos logs
+  }
+}
+
+function concatChunks(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
 }
 
 /** Para todos os apps da suíte de uma vez (nunca lança; usado no afterAll). */

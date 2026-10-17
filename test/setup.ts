@@ -7,7 +7,8 @@ import { buildMikroOrmConfig } from '../src/infra/mikro-orm.config';
  *
  * Isola os testes do banco de desenvolvimento do `.env`: força
  * `DB_NAME=wagering_test` e usa os defaults do docker-compose para
- * host/porta/usuário/senha quando não informados.
+ * host/porta/usuário/senha quando não informados e silencia o logger
+ * (`LOG_LEVEL` setada explicitamente vence).
  */
 process.env.DB_NAME = 'wagering_test';
 process.env.DB_HOST ??= 'localhost';
@@ -17,6 +18,8 @@ process.env.DB_PASSWORD ??= 'wagering';
 // Nenhum teste roda o publisher em loop automaticamente: os testes da fatia 7a
 // instanciam o `OutboxPublisherWorker` direto, com configuração explícita.
 process.env.WORKERS_ENABLED = 'api';
+// Testes não imprimem nem leem logs por padrão: `LOG_LEVEL` setada no env vence
+// (a suíte de logs `spawnApp` com `LOG_LEVEL=info`).
 
 export const TEST_DB_NAME = process.env.DB_NAME;
 const MAINTENANCE_DB_NAME = 'wagering';

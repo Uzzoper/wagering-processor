@@ -12,6 +12,7 @@ import {
   type UnitOfWork,
 } from '../../application/ports';
 import type { OutboxMessage } from '../../domain/outbox-message';
+import { logEvent } from '../observability/json-logger';
 
 export interface OutboxPublisherOptions {
   /** `WORKERS_ENABLED` contém `outbox`. */
@@ -93,14 +94,10 @@ export class OutboxPublisherWorker implements OnModuleInit, OnApplicationShutdow
       (faultAggregate === undefined ||
         claim.some((message) => message.aggregateId === faultAggregate));
     if (shouldFault) {
-      console.log(
-        JSON.stringify({
-          level: 'warn',
-          event: 'test.fault_exit',
-          stage: 'after_claim_before_publish',
-          claimed: claim.length,
-        }),
-      );
+      logEvent('warn', 'test.fault_exit', {
+        stage: 'after_claim_before_publish',
+        claimed: claim.length,
+      });
       process.exit(137);
     }
 
@@ -127,9 +124,7 @@ export class OutboxPublisherWorker implements OnModuleInit, OnApplicationShutdow
         claimed = await this.processDueBatch();
       } catch (error) {
         claimed = 0;
-        console.log(
-          JSON.stringify({ level: 'warn', event: 'outbox.cycle_failed', error: String(error) }),
-        );
+        logEvent('warn', 'outbox.cycle_failed', { error: String(error) });
       }
       if (claimed === 0) {
         await this.sleep(this.options.pollIntervalMs);
@@ -154,16 +149,12 @@ export class OutboxPublisherWorker implements OnModuleInit, OnApplicationShutdow
     await this.unitOfWork.run((repositories) =>
       repositories.outbox.persistRetry(message.id, message.attempts, nextAttemptAt),
     );
-    console.log(
-      JSON.stringify({
-        level: 'warn',
-        event: 'outbox.publish_failed',
-        eventId: message.eventId,
-        walletId: message.aggregateId,
-        attempts: message.attempts,
-        error: String(error),
-      }),
-    );
+    logEvent('warn', 'outbox.publish_failed', {
+      eventId: message.eventId,
+      walletId: message.aggregateId,
+      attempts: message.attempts,
+      error: String(error),
+    });
   }
 
   private sleep(ms: number): Promise<void> {
