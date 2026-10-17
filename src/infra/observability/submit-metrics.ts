@@ -33,13 +33,18 @@ export class InstrumentedSubmitWagerUseCase {
         (COUNTED_OUTCOMES as readonly string[]).includes(result.outcome) &&
         'transaction' in result
       ) {
-        this.registry.increment(WAGER_TRANSACTIONS_TOTAL, {
-          status: result.outcome,
-          kind: input.kind,
-        });
-        if (result.replay === true && this.isHttpPath(context)) {
-          // Na borda SQS a dedupe vem do inbox (fonte própria no consumer).
-          this.registry.increment(WAGER_DUPLICATES_TOTAL, { source: 'idempotency' });
+        if (result.replay === true) {
+          // Replay não é transação nova: o counter de transações não cresce.
+          // HTTP: dedupe pela Idempotency-Key; na borda SQS a fonte é o inbox
+          // (contado após o tryInsert no consumer, com commit garantido).
+          if (this.isHttpPath(context)) {
+            this.registry.increment(WAGER_DUPLICATES_TOTAL, { source: 'idempotency' });
+          }
+        } else {
+          this.registry.increment(WAGER_TRANSACTIONS_TOTAL, {
+            status: result.outcome,
+            kind: input.kind,
+          });
         }
         logEvent('info', 'wager.submitted', {
           outcome: result.outcome,

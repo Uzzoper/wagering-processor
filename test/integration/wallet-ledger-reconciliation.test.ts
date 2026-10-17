@@ -537,6 +537,7 @@ describe('POST /wallets/:walletId/reconciliation', () => {
       expect(metrics.counter(RECONCILIATION_METRIC) - counterBefore).toBe(1);
 
       // Log de erro JSON com walletId e diferença (asserção barata do evento da casa).
+      // Sem saldos monetários no log (CHALLENGE §12) — só identificadores.
       const logged = errorSpy.mock.calls
         .map((call) => String(call[0] ?? ''))
         .filter((line) => line.includes('"event":"reconciliation.mismatch"'));
@@ -544,7 +545,6 @@ describe('POST /wallets/:walletId/reconciliation', () => {
       const loggedPayload = JSON.parse(logged[0] ?? '{}') as Record<string, unknown>;
       expect(loggedPayload.walletId).toBe(wallet.body.id);
       expect(loggedPayload.difference).toBe('-5.00');
-      expect(loggedPayload.stored).toBe('85.00');
 
       // Divergência NUNCA é corrigida: ledger intacto e saldo mantido.
       const snapshot = await query<Array<{ count: string; ledger_sum: string | null; balance: string }>>(

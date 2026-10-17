@@ -44,10 +44,11 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
     this.metrics = options?.metrics;
   }
 
-  run<T>(work: (repositories: Repositories) => Promise<T>): Promise<T> {
+  async run<T>(work: (repositories: Repositories) => Promise<T>): Promise<T> {
     const em = this.orm.em.fork();
     try {
-      return em.transactional(
+      // `await` dentro do try: rejeições da tx passam pelo catch do lock abaixo.
+      return await em.transactional(
         async (tx) => {
           await tx.execute(`SET LOCAL lock_timeout = ${this.lockTimeoutMs}`);
           return work(this.buildRepositories(tx));
