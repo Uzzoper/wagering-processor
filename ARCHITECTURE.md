@@ -328,5 +328,5 @@ Consistência travada: `400` = borda inválida; `404` = wallet inexistente; `409
 
 ## Pendências por fatia (do review pós-5a — não fazer antes da hora)
 
-- ✓ Fatia 7 (mensageria): `GET /health/ready`, `InboxMessage` de domínio, tests de crash recovery via ganchos `FAULT_*` (commit/ack e claim/publicação, fatia 7d).
+- ✓ Fatia 7 (mensageria): `GET /health/ready`, `InboxMessage` de domínio, tests de crash recovery via ganchos `FAULT_*` (commit/ack e claim/publicação, fatia 7d). Fatia 7d completa: consumer e publisher mortos entre commit/ack e claim/publicação (`crash-recovery`), carga multiprocesso com 3 instâncias `api,outbox,pending` + consumer SQS separado — 80/80, replay 50×, perna SQS com reenvios (`multiprocess-replay`) e SIGKILL com substituição + carga mista envolvendo `REFUND` antes da referência, exaustão de tentativas → `REJECTED REFERENCE_NOT_FOUND` e prova de eventos `outbox ⊆ fila de eventos` (`kill-restart`).
 - Fatia 8 (polimento): limpeza de docblocks (AGENTS "só onde não óbvio"), regex de escala duplicado DTO×domínio, interpretação do `Money.equals` cross-currency (hoje retorna `false`; reavaliar contra a leitura literal da spec).
