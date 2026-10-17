@@ -72,8 +72,8 @@ function mapRow(row: Record<string, unknown>): StoredTransaction {
     referenceTransactionId: (row.reference_transaction_id as string | null) ?? undefined,
     status: row.status as WagerTransactionStatus,
     failureCode: (row.failure_code as FailureCode | null) ?? undefined,
-    processedAt: (row.processed_at as Date | null) ?? undefined,
-    createdAt: row.created_at as Date,
+    processedAt: toDate(row.processed_at),
+    createdAt: toDate(row.created_at) ?? failMissing('created_at'),
   });
   // Escritores sempre preenchem o saldo observado; o fallback existe só por robustez.
   const observedAmount = row.observed_balance_amount as string | null;
@@ -83,16 +83,32 @@ function mapRow(row: Record<string, unknown>): StoredTransaction {
       ? Money.zero(observedCurrency)
       : Money.from({ amount: observedAmount, currency: observedCurrency });
   // Estado pendente é derivado das colunas dedicadas (worker de PENDING_REFERENCE).
-  const pendingSince = row.pending_since as Date | null;
+  const pendingSince = toDate(row.pending_since);
+  const nextRetryAt = toDate(row.next_retry_at);
   const pending =
-    pendingSince === null
+    pendingSince === undefined
       ? undefined
       : {
           retryAttempts: row.retry_attempts as number,
           pendingSince,
-          nextRetryAt: row.next_retry_at as Date,
+          nextRetryAt: nextRetryAt ?? failMissing('next_retry_at'),
         };
   return { transaction, observedBalance, pending };
+}
+
+/** `em.execute` cru devolve timestamptz como string (pg sem parser de ts). */
+function toDate(value: unknown): Date | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  return new Date(String(value).replace(' ', 'T').replace('+00', 'Z').replace('+0000', 'Z'));
+}
+
+function failMissing(column: string): never {
+  throw new Error(`wager_transaction: coluna "${column}" ausente na leitura`);
 }
 
 /** INSERT puro via SQL (nunca ORM save); leitura reconstrói o domínio via `rehydrate`. */

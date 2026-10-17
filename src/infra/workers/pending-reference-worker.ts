@@ -102,6 +102,11 @@ export class PendingReferenceWorker implements OnModuleInit, OnApplicationShutdo
     if (claimed.length === 0) {
       return 0;
     }
+    // UPDATE ... RETURNING não garante ordem: processa por created_at para que
+    // uma cadeia (ROLLBACK de REFUND pendente) progrida dentro do mesmo batch.
+    claimed.sort(
+      (a, b) => a.transaction.createdAt.getTime() - b.transaction.createdAt.getTime(),
+    );
     for (const row of claimed) {
       // Sequencial: a ordem de claim (created_at) é preservada e erros isolam por linha.
       try {
