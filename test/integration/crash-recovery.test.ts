@@ -377,11 +377,37 @@ describe('morte do publisher entre o claim e a publicação', () => {
       await Bun.sleep(200);
     }
 
-    // Todos os eventIds chegam na fila privada (duplicata por eventId é segura).
-    const queued = await drainEventQueue(sqs, eventsUrl, 10);
-    const queuedIds = new Set(queued.map((event) => event.eventId));
-    for (const eventId of eventIds) {
-      expect(queuedIds.has(eventId)).toBe(true);
+    // Todos os eventIds chegam na fila privada: espera EVENTO a evento com
+    // deadline (a fila pode âmago devolve 0 numa sondagem antes do evento)
+    // e DELETA à medida que recebe.
+    {
+      const { DeleteMessageCommand } = await import('@aws-sdk/client-sqs');
+      const remaining = new Set<string>(eventIds);
+      const presenceDeadline = Date.now() + 45_000;
+      for (;;) {
+        const received = await pollReceive(sqs, eventsUrl, { waitSeconds: 1 });
+        for (const { body, receiptHandle } of received) {
+          await sqs.send(
+            new DeleteMessageCommand({ QueueUrl: eventsUrl, ReceiptHandle: receiptHandle }),
+          );
+          try {
+            const envelope = JSON.parse(body) as { eventId?: string };
+            if (typeof envelope.eventId === 'string') {
+              remaining.delete(envelope.eventId);
+            }
+          } catch {
+            // corpo fora do formato: descartado
+          }
+        }
+        if (remaining.size === 0) {
+          break;
+        }
+        if (Date.now() > presenceDeadline) {
+          throw new Error(
+            `timeout: ${String(remaining.size)}/3 eventIds ainda não publicados na fila de eventos`,
+          );
+        }
+      }
     }
 
     expect(p2.proc.exitCode).toBeNull();
