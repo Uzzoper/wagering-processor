@@ -1,4 +1,10 @@
-import { DeleteMessageCommand, PurgeQueueCommand, SendMessageCommand } from '@aws-sdk/client-sqs';
+import {
+  CreateQueueCommand,
+  DeleteMessageCommand,
+  DeleteQueueCommand,
+  PurgeQueueCommand,
+  SendMessageCommand,
+} from '@aws-sdk/client-sqs';
 import { MikroORM } from '@mikro-orm/postgresql';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 
@@ -10,7 +16,6 @@ import { spawnApp, type SpawnApp } from '../helpers/app-process';
 import {
   createPrivateEventsQueue,
   createPrivateWagerQueues,
-  drainEventQueue,
   makeSqsClient,
   pollReceive,
 } from '../helpers/sqs-suite';
@@ -22,11 +27,14 @@ import { assertLedgerConsistency } from './ledger-consistency';
  * (3) morte do publisher entre o claim e a publicação (FAULT_EXIT_AFTER_CLAIM);
  * (5) SIGTERM com mensagens em voo — nada perdido.
  *
- * Filas privadas da suíte (nunca as de produção nem de outra suíte); zero
- * sleep fixo — o BPM só espera por coisa via poll com deadline.
+ * Filas privadas ÚNICAS por rodada (nunca as de produção): um órfão de rodada
+ * anterior apontando para um nome antigo NÃO pode consumir nossas mensagens.
+ * Zero sleep fixo — o processo só espera por coisa via poll com deadline.
  */
 
-const SUITE = 'test-crash7d';
+const SUITE_BASE = 'test-crash7d';
+// Sufixo por rodada: filas de runs antigos (e seus órfãos) ficam fora do caminho.
+const SUITE = `${SUITE_BASE}-${crypto.randomUUID().slice(0, 8)}`;
 const WAGER_QUEUE_NAME = `${SUITE}.fifo`;
 const EVENTS_QUEUE_NAME = `${SUITE}-events.fifo`;
 
@@ -212,6 +220,10 @@ afterAll(async () => {
   for (const spawn of spawns) {
     await spawn.stop().catch(() => undefined);
   }
+  // Filas privadas desta rodada: melhor esforço, uma filas órfãs não nos atrapalham.
+  for (const queueUrl of [wagerUrl, dlqUrl, eventsUrl]) {
+    await sqs.send(new DeleteQueueCommand({ QueueUrl: queueUrl })).catch(() => undefined);
+  }
   await orm.close(true);
 });
 
@@ -231,10 +243,13 @@ describe('morte entre o commit e o ack', () => {
 
     const bet = await sendBet(playerId, walletId, '10.00');
 
-    // A morre 137 E o commit fica visível no banco (poll com deadline).
-    await pollExitCode(a.proc, 137);
-    const processed = await pollTransaction(bet.idempotencyKey, 'PROCESSED', 30_000);
+    // Ordem determinística: primeiro prova do commit no banco (PROCESSED só
+    // existe se A recebeu E commitou — A é o único consumidor da fila única da
+    // rodada); SO ENTÃO o exit 137, que fica a alguns ms do commit
+    // (prazo curto de propósito: safo o gancho não disparou).
+    const processed = await pollTransaction(bet.idempotencyKey, 'PROCESSED', 120_000);
     expect(processed.status).toBe('PROCESSED');
+    await pollExitCode(a.proc, 137, 30_000);
 
     // B SEM env de falha: prova que o gancho é ignorado sem a env e segue vivo.
     const b = await spawnApp({
@@ -245,7 +260,8 @@ describe('morte entre o commit e o ack', () => {
     spawns.push(b);
 
     // Redelivery entra pelo replay do inbox: exatamente 1 débito, 1 transação.
-    const deadline = Date.now() + 45_000;
+    // 2x margem sob carga de arquivos em paralelo
+    const deadline = Date.now() + 90_000;
     for (;;) {
       if ((await ledgerDirectionCount(walletId, 'DEBIT')) >= 1) {
         break;
@@ -274,7 +290,7 @@ describe('morte entre o commit e o ack', () => {
     expect(inbox[0]!.processed).toBe(1);
 
     // fila principal e DLQ limpas (nada redrivou).
-    await pollUntilEmpty(wagerUrl, 30_000);
+    await pollUntilEmpty(wagerUrl, 60_000);
     await assertDlqEmpty();
 
     // B segue vivo e desliga limpo (exit 0 no SIGTERM).
@@ -360,7 +376,7 @@ describe('morte do publisher entre o claim e a publicação', () => {
     });
     spawns.push(p2);
 
-    const deadline = Date.now() + 45_000;
+    const deadline = Date.now() + 90_000;
     for (;;) {
       const placeholders = eventIds.map(() => '?').join(', ');
       const rows = await query<Array<{ pending: number }>>(
@@ -383,7 +399,7 @@ describe('morte do publisher entre o claim e a publicação', () => {
     {
       const { DeleteMessageCommand } = await import('@aws-sdk/client-sqs');
       const remaining = new Set<string>(eventIds);
-      const presenceDeadline = Date.now() + 45_000;
+      const presenceDeadline = Date.now() + 90_000;
       for (;;) {
         const received = await pollReceive(sqs, eventsUrl, { waitSeconds: 1 });
         for (const { body, receiptHandle } of received) {

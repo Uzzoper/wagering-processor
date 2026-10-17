@@ -540,7 +540,9 @@ describe('dois publishers concorrentes sobre 200 linhas', () => {
     expect(pending.size).toBe(0);
     await assertAllPublished(aggregates);
 
-    const queue = await drainQueue(new Set(aggregates), 200);
+    // LocalStack sob a carga de processos da 7d atrasa entregas: margem 90s
+    // (a quiescência no DB já foi provada acima; aqui é só lag de fila).
+    const queue = await drainQueue(new Set(aggregates), 200, 90_000);
     const queuedIds = new Set(queue.map((message) => message.eventId));
     expect(queuedIds.size).toBe(200);
     for (const event of events) {

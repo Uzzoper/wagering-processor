@@ -10,7 +10,6 @@ import { spawnApp, type SpawnApp } from '../helpers/app-process';
 import {
   createPrivateEventsQueue,
   createPrivateWagerQueues,
-  drainEventQueue,
   makeSqsClient,
   pollReceive,
 } from '../helpers/sqs-suite';
@@ -23,7 +22,9 @@ import { assertLedgerConsistency } from './ledger-consistency';
  * (c) perna SQS com dedup do inbox. Zero sleep fixo — só poll com deadline.
  */
 
-const SUITE = 'test-mpr';
+const SUITE_BASE = 'test-mpr';
+// Sufixo por rodada: órfãos de rodadas anteriores ficam fora das filas frescas.
+const SUITE = `${SUITE_BASE}-${crypto.randomUUID().slice(0, 8)}`;
 const WAGER_QUEUE_NAME = `${SUITE}.fifo`;
 const EVENTS_QUEUE_NAME = `${SUITE}-events.fifo`;
 const HTTP_PORTS = [4321, 4322, 4323];
@@ -254,6 +255,11 @@ afterAll(async () => {
   for (const spawn of spawns) {
     await spawn.stop().catch(() => undefined);
   }
+  // Filas privadas desta rodada: melhor esforço.
+  for (const queueUrl of [wagerUrl, dlqUrl, eventsUrl]) {
+    const { DeleteQueueCommand } = await import('@aws-sdk/client-sqs');
+    await sqs.send(new DeleteQueueCommand({ QueueUrl: queueUrl })).catch(() => undefined);
+  }
   await orm.close(true);
 });
 
@@ -412,8 +418,28 @@ describe('3 instâncias (api,outbox,pending) + consumer SQS separado', () => {
 
     // Nada perdido de forma grosseira: a fila privada de eventos recebeu
     // envelopes das publicações (a prova completa de ⊇ está no F3).
-    const queued = await drainEventQueue(sqs, eventsUrl, 10);
-    expect(queued.length).toBeGreaterThan(0);
+    // SGurança de presença com prazo: sob carga, uma sondagem vazia não encerra
+    // o drain (mesma classe de truncamento corrigida no F3).
+    const presenceDeadline = Date.now() + 60_000;
+    let receivedCount = 0;
+    for (;;) {
+      const received = await pollReceive(sqs, eventsUrl, { waitSeconds: 1 });
+      for (const { body, receiptHandle } of received) {
+        await sqs.send(
+          new DeleteMessageCommand({ QueueUrl: eventsUrl, ReceiptHandle: receiptHandle }),
+        );
+        if (body.trim().startsWith('{')) {
+          receivedCount += 1;
+        }
+      }
+      if (receivedCount > 0) {
+        break;
+      }
+      if (Date.now() > presenceDeadline) {
+        throw new Error('timeout: fila de eventos sem nenhum envelope publicado');
+      }
+    }
+    expect(receivedCount).toBeGreaterThan(0);
 
     for (const { walletId } of wallets) {
       await assertLedgerConsistency(query, walletId);

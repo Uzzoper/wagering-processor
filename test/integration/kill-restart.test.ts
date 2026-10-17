@@ -9,7 +9,6 @@ import { spawnApp, type SpawnApp } from '../helpers/app-process';
 import {
   createPrivateEventsQueue,
   createPrivateWagerQueues,
-  drainEventQueue,
   makeSqsClient,
   pollReceive,
 } from '../helpers/sqs-suite';
@@ -23,7 +22,9 @@ import { assertLedgerConsistency } from './ledger-consistency';
  * eventIds do outbox ⊇ drenados da fila de privada de eventos. Zero sleep fixo.
  */
 
-const SUITE = 'test-kr';
+const SUITE_BASE = 'test-kr';
+// Sufixo por rodada: órfãos de rodadas anteriores (filas antigas) ficam fora.
+const SUITE = `${SUITE_BASE}-${crypto.randomUUID().slice(0, 8)}`;
 const WAGER_QUEUE_NAME = `${SUITE}.fifo`;
 const EVENTS_QUEUE_NAME = `${SUITE}-events.fifo`;
 const HTTP_PORTS = [4331, 4332, 4333];
@@ -223,6 +224,11 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const spawn of spawns) {
     await spawn.stop().catch(() => undefined);
+  }
+  // Filas privadas desta rodada: melhor esforço (sem depender do resultado).
+  for (const queueUrl of [wagerUrl, dlqUrl, eventsUrl]) {
+    const { DeleteQueueCommand } = await import('@aws-sdk/client-sqs');
+    await sqs.send(new DeleteQueueCommand({ QueueUrl: queueUrl })).catch(() => undefined);
   }
   await orm.close(true);
 });
@@ -424,10 +430,40 @@ describe('SIGKILL com substituição + carga mista (HTTP + SQS)', () => {
       `SELECT event_id FROM outbox_message WHERE aggregate_id IN (${places})`,
       allAggregates,
     );
-    const drained = await drainEventQueue(sqs, eventsUrl, 40);
-    const drainedIds = new Set(drained.map((event) => event.eventId));
-    for (const row of published) {
-      expect(drainedIds.has(row.event_id)).toBe(true);
+    // Drenar ATÉ COBRIR o conjunto esperado, com deadline (nunca teto fixo de
+    // rodadas): o helper com corte devolve logo na primeira sondagem vazia —
+    // sob carga, LocalStack pode responder 0 mesmo com o publisher em fila
+    // de entrega (lag após a quiescência do banco) e o conjunto sai truncado.
+    // Esperado vem do DB APÓS a quiescência (linhas do outbox são permanentes);
+    // se um evento nunca chegar, o prazo estoura — perda real, correto falhar.
+    const { DeleteMessageCommand } = await import('@aws-sdk/client-sqs');
+    const expectedIds = published.map((row) => row.event_id);
+    const drainedIds = new Set<string>();
+    const drainDeadline = Date.now() + 120_000;
+    for (;;) {
+      const received = await pollReceive(sqs, eventsUrl, { waitSeconds: 1 });
+      for (const { body, receiptHandle } of received) {
+        await sqs.send(
+          new DeleteMessageCommand({ QueueUrl: eventsUrl, ReceiptHandle: receiptHandle }),
+        );
+        try {
+          const envelope = JSON.parse(body) as { eventId?: string };
+          if (typeof envelope.eventId === 'string') {
+            drainedIds.add(envelope.eventId);
+          }
+        } catch {
+          // corpo fora do formato: descartado e deletado
+        }
+      }
+      const missing = expectedIds.filter((id) => !drainedIds.has(id));
+      if (missing.length === 0) {
+        break;
+      }
+      if (Date.now() > drainDeadline) {
+        throw new Error(
+          `timeout: ${String(missing.length)}/${String(expectedIds.length)} eventIds não drenados`,
+        );
+      }
     }
   }, 600_000);
 });

@@ -26,9 +26,28 @@ export interface SpawnAppOptions {
   env?: Record<string, string | undefined>;
 }
 
+/** A porta precisa estar LIVRE antes do spawn: um processo órfão de rodada
+ * interrompida responde /health/live e a readiness "valida" o processo morto
+ * (o filho real morre de EADDRINUSE). Pre-checagem converte isso em falha
+ * rápida e clara em vez de teste correndo contra um serviço estranho. */
+async function assertPortFree(port: number): Promise<void> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health/live`);
+    if (response.ok || response.status >= 400) {
+      throw new Error(`porta ${port} já ocupada por processo órfão (limpe antes de rodar)`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('porta ')) {
+      throw error;
+    }
+    // fetch recusado = porta livre
+  }
+}
+
 /** Sobe o app e espera `GET /health/live` (poll com deadline, padrão 20s). */
 export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
   const { port } = options;
+  await assertPortFree(port);
   const proc = Bun.spawn(['bun', 'run', 'src/main.ts'], {
     cwd: ROOT,
     env: {
@@ -45,7 +64,9 @@ export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
   const deadline = Date.now() + 20_000;
   for (;;) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/health/live`);
+    const response = await fetch(`http://127.0.0.1:${port}/health/live`, {
+      signal: AbortSignal.timeout(1_500),
+    });
       if (response.ok) {
         break;
       }
@@ -59,6 +80,12 @@ export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
       throw new Error(`timeout: app da porta ${port} não respondeu /health/live`);
     }
     await Bun.sleep(200);
+  }
+  // Margem pós-readiness: saúde pode ter vindo de processo órfão na porta.
+  // Se o filho de verdade morrer nesse intervalo (EADDRINUSE...), falha aqui.
+  await Bun.sleep(1_000);
+  if (proc.exitCode !== null || proc.signalCode !== null) {
+    throw new Error(`app da porta ${port} morreu logo após a readiness (porta roubada?)`);
   }
 
   return {
