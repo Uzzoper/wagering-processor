@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { Injectable, type OnApplicationShutdown, type OnModuleInit } from '@nestjs/common';
 import {
+  ChangeMessageVisibilityCommand,
   ChangeMessageVisibilityBatchCommand,
   DeleteMessageCommand,
   GetQueueUrlCommand,
@@ -21,6 +22,7 @@ import { SQS_RETRIES_TOTAL, WAGER_DUPLICATES_TOTAL } from '../../application/met
 import type { MetricsPort } from '../../application/ports';
 import { WagerInputError, parseWagerInput, type WagerInputBody } from '../../application/wager-input';
 import { InboxMessage } from '../../domain/inbox-message';
+import { sqsRetryDelaySeconds } from './sqs-retry-policy';
 
 export const SQS_WAGER_CONSUMER_NAME = 'wager-sqs-consumer';
 
@@ -46,6 +48,8 @@ export interface SqsWagerConsumerOptions {
   pollIntervalMs?: number; // default 100
   /** Nome fixo do consumidor no dedup do inbox. */
   consumerName?: string; // default 'wager-sqs-consumer'
+  retryBaseDelaySeconds?: number; // default 30
+  retryMaxDelaySeconds?: number; // default 3600
   /**
    * Hook de teste/fault-injection: roda antes do DELETE (ack); lançar dele
    * simula morte pós-commit — a mensagem NÃO é deletada e o redelivery
@@ -67,6 +71,8 @@ function withDefaults(options: SqsWagerConsumerOptions): ConsumerRuntimeOptions 
     heartbeatMs: options.heartbeatMs ?? 20_000,
     pollIntervalMs: options.pollIntervalMs ?? 100,
     consumerName: options.consumerName ?? SQS_WAGER_CONSUMER_NAME,
+    retryBaseDelaySeconds: options.retryBaseDelaySeconds ?? 30,
+    retryMaxDelaySeconds: options.retryMaxDelaySeconds ?? 3_600,
   };
 }
 
@@ -92,8 +98,8 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
   private resolveSleep?: () => void;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private queueUrlPromise?: Promise<string>;
-  /** Receipt → messageId das mensagens em voo (para o heartbeat). */
-  private inFlight = new Map<string, string>();
+  /** Receipt → timeout atual (para manter o heartbeat alinhado ao backoff). */
+  private inFlight = new Map<string, number>();
 
   private readonly useCaseMetrics?: MetricsPort;
 
@@ -158,7 +164,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     );
     const messages = response.Messages ?? [];
     for (const message of messages) {
-      this.inFlight.set(message.ReceiptHandle!, message.MessageId!);
+      this.inFlight.set(message.ReceiptHandle!, this.options.visibilityTimeoutSeconds);
     }
     // Sequencial para preservar a ordem de entrega FIFO por MessageGroupId.
     for (const message of messages) {
@@ -187,7 +193,10 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async process(message: SqsMessage): Promise<void> {
-    const receiveCount = Number.parseInt(message.Attributes?.ApproximateReceiveCount ?? '1', 10);
+    const parsedReceiveCount = Number.parseInt(message.Attributes?.ApproximateReceiveCount ?? '1', 10);
+    const receiveCount = Number.isFinite(parsedReceiveCount) && parsedReceiveCount > 0
+      ? parsedReceiveCount
+      : 1;
     const body = message.Body ?? '';
 
     const envelope = this.parseEnvelope(body);
@@ -230,7 +239,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     let result: SubmitWagerResult;
     // Redelivery detectado só sobrevive se o commit acontecer: o contador entra
     // APÓS o `execute` (mesma semântica do ack).
-    let inboxDuplicate = false;
+    let inboxPayloadConflict = false;
     try {
       result = await this.useCase.execute(input, {
         beforeRepositories: async (repositories) => {
@@ -243,37 +252,50 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
           });
           inboxMessage.markProcessed(new Date());
           const inserted = await repositories.inbox.tryInsert(inboxMessage);
-          if (!inserted) {
-            inboxDuplicate = true;
+          if (!inserted.inserted) {
+            inboxPayloadConflict = inserted.existingPayloadHash !== inboxMessage.payloadHash;
+            return 'DUPLICATE';
           }
+          return 'CONTINUE';
         },
       });
     } catch (error) {
-      // Transitório (PG/SQS fora, lock timeout…): NÃO deleta — a visibilidade
-      // devolve a mensagem; nunca ack sem commit.
+      // Transitório (PG fora, lock timeout…): NÃO deleta; aumenta a visibilidade
+      // exponencialmente conforme ApproximateReceiveCount.
       this.log('error', 'sqs.process_deferred', {
         messageId: envelope.messageId,
         walletId: input.walletId,
         receiveCount,
+        retryDelaySeconds: this.retryDelaySeconds(receiveCount),
         error: String(error),
       });
+      await this.deferWithBackoff(message, receiveCount);
       return;
     }
 
-    if (inboxDuplicate) {
+    if (result.outcome === 'INBOX_DUPLICATE') {
       this.useCaseMetrics?.increment(WAGER_DUPLICATES_TOTAL, { source: 'inbox' });
+      this.log(
+        inboxPayloadConflict ? 'warn' : 'info',
+        inboxPayloadConflict ? 'sqs.message_conflict' : 'sqs.inbox_duplicate',
+        {
+          messageId: envelope.messageId,
+          receiveCount,
+          payloadHashConflict: inboxPayloadConflict,
+        },
+      );
+    } else {
+      this.log('info', 'sqs.processed', {
+        messageId: envelope.messageId,
+        transactionId: 'transaction' in result ? result.transaction.id : undefined,
+        outcome: result.outcome,
+        reply: 'replay' in result ? result.replay : undefined,
+      });
     }
 
-    this.log('info', 'sqs.processed', {
-      messageId: envelope.messageId,
-      transactionId: 'transaction' in result ? result.transaction.id : undefined,
-      outcome: result.outcome,
-      reply: 'replay' in result ? result.replay : undefined,
-    });
-
     // Gancho de crash recovery (teste, fatia 7d): mata o processo REAL exatamente
-    // depois do commit e antes do primeiro DELETE — a redelivery entra pelo replay
-    // via inbox. Somente em NODE_ENV=test, nunca em produção.
+    // depois do commit e antes do primeiro DELETE — a redelivery termina pelo
+    // no-op da inbox. Somente em NODE_ENV=test, nunca em produção.
     if (process.env.NODE_ENV === 'test' && process.env.FAULT_EXIT_AFTER_COMMIT === '1') {
       this.log('warn', 'test.fault_exit', {
         messageId: envelope.messageId,
@@ -286,12 +308,23 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     // WALLET_NOT_FOUND/conflito/dedup): ack agora. beforeAck (fault injection)
     // lançando = morte pós-commit: a mensagem fica recebível para replay.
     await this.beforeAck?.(envelope.messageId);
-    await this.client.send(
-      new DeleteMessageCommand({
-        QueueUrl: await this.resolveQueueUrl(),
-        ReceiptHandle: message.ReceiptHandle!,
-      }),
-    );
+    try {
+      await this.client.send(
+        new DeleteMessageCommand({
+          QueueUrl: await this.resolveQueueUrl(),
+          ReceiptHandle: message.ReceiptHandle!,
+        }),
+      );
+    } catch (error) {
+      this.log('warn', 'sqs.ack_deferred', {
+        messageId: envelope.messageId,
+        receiveCount,
+        retryDelaySeconds: this.retryDelaySeconds(receiveCount),
+        error: String(error),
+      });
+      await this.deferWithBackoff(message, receiveCount);
+      return;
+    }
     this.log('info', 'sqs.acked', { messageId: envelope.messageId });
   }
 
@@ -353,15 +386,49 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
+  private retryDelaySeconds(receiveCount: number): number {
+    return sqsRetryDelaySeconds(
+      receiveCount,
+      this.options.retryBaseDelaySeconds,
+      this.options.retryMaxDelaySeconds,
+    );
+  }
+
+  /** Infra transitória: deixa a mensagem invisível por 30s, 60s, 120s... até 1h. */
+  private async deferWithBackoff(message: SqsMessage, receiveCount: number): Promise<void> {
+    const receiptHandle = message.ReceiptHandle;
+    if (receiptHandle === undefined) {
+      return;
+    }
+    const visibilityTimeout = this.retryDelaySeconds(receiveCount);
+    this.inFlight.set(receiptHandle, visibilityTimeout);
+    try {
+      await this.client.send(
+        new ChangeMessageVisibilityCommand({
+          QueueUrl: await this.resolveQueueUrl(),
+          ReceiptHandle: receiptHandle,
+          VisibilityTimeout: visibilityTimeout,
+        }),
+      );
+    } catch (error) {
+      this.log('warn', 'sqs.retry_visibility_failed', {
+        messageId: message.MessageId,
+        receiveCount,
+        retryDelaySeconds: visibilityTimeout,
+        error: String(error),
+      });
+    }
+  }
+
   /** Heartbeat: estende a visibilidade das mensagens em voo (~lote de 10). */
   private async heartbeat(): Promise<void> {
     if (!this.running || this.inFlight.size === 0) {
       return;
     }
-    const entries = [...this.inFlight.entries()].slice(0, 10).map(([receiptHandle], index) => ({
+    const entries = [...this.inFlight.entries()].slice(0, 10).map(([receiptHandle, timeout], index) => ({
       Id: String(index),
       ReceiptHandle: receiptHandle,
-      VisibilityTimeout: this.options.visibilityTimeoutSeconds,
+      VisibilityTimeout: timeout,
     }));
     if (entries.length === 0) {
       return;

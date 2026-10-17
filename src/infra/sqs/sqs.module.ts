@@ -93,7 +93,12 @@ export const SQS_CLIENT_TOKEN = SQS_CLIENT;
           ),
           client,
           sqs.wagerQueueName,
-          { enabled: sqs.consumerEnabled, metrics },
+          {
+            enabled: sqs.consumerEnabled,
+            metrics,
+            retryBaseDelaySeconds: sqs.retryBaseDelaySeconds,
+            retryMaxDelaySeconds: sqs.retryMaxDelaySeconds,
+          },
         );
       },
       inject: [UNIT_OF_WORK, SQS_CLIENT, METRICS, PROVIDER_IDENTITY],

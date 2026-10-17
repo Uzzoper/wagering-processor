@@ -17,9 +17,14 @@ import type { AddressInfo } from 'node:net';
 import { assertLedgerConsistency } from './ledger-consistency';
 import { AppModule } from '../../src/app.module';
 import { CreateWalletUseCase } from '../../src/application/create-wallet.use-case';
+import { SQS_RETRIES_TOTAL, WAGER_DUPLICATES_TOTAL } from '../../src/application/metric-names';
 import type { UnitOfWork } from '../../src/application/ports';
 import { NoopProviderIdentity } from '../../src/infra/auth/noop-provider-identity';
-import { SubmitWagerTransactionUseCase } from '../../src/application/submit-wager.use-case';
+import {
+  SubmitWagerTransactionUseCase,
+  type SubmitWagerCommands,
+} from '../../src/application/submit-wager.use-case';
+import { MemoryMetrics } from '../../src/infra/observability/metrics';
 import { MikroOrmUnitOfWork } from '../../src/infra/persistence/unit-of-work';
 import { SqsWagerConsumer, type SqsWagerConsumerOptions } from '../../src/infra/sqs/sqs-wager-consumer';
 
@@ -140,10 +145,14 @@ async function send(
   walletId: string,
   deduplicationId: string,
 ): Promise<void> {
+  await sendBody(JSON.stringify(envelope), walletId, deduplicationId);
+}
+
+async function sendBody(body: string, walletId: string, deduplicationId: string): Promise<void> {
   await sqs.send(
     new SendMessageCommand({
       QueueUrl: queueUrl,
-      MessageBody: JSON.stringify(envelope),
+      MessageBody: body,
       MessageGroupId: walletId,
       MessageDeduplicationId: deduplicationId,
     }),
@@ -192,6 +201,12 @@ async function drainUntil(
     }
   }
   return found;
+}
+
+async function expectNoRedelivery(messageId: string): Promise<void> {
+  // Aguarda além da visibilidade de teste (2s) para detectar ack ausente.
+  const redeliveries = await drainUntil(new Set([messageId]), 1, 3_500);
+  expect(redeliveries).toHaveLength(0);
 }
 
 /** Processa a fila com o consumer até ela parar de devolver mensagens. */
@@ -347,9 +362,10 @@ describe('fluxo: BET via SQS processada com inbox na mesma tx', () => {
     expect(inbox).toHaveLength(1);
     expect(inbox[0]!.processed_at).not.toBeNull();
 
-    // ack (DELETE) pós-commit: a fila não devolve a mensagem
+    // Mantém a checagem imediata e também espera além da visibilidade de teste.
     const leftovers = await drainUntil(new Set([messageId]), 0, 3_000);
     expect(leftovers).toHaveLength(0);
+    await expectNoRedelivery(messageId);
 
     await assertLedgerConsistency(executeShared, walletId);
   }, 60_000);
@@ -357,6 +373,7 @@ describe('fluxo: BET via SQS processada com inbox na mesma tx', () => {
 
 describe('redelivery: dedup via inbox, sem novo débito', () => {
   test('mesmo messageId reenviado → replay idempotente (saldo/ledger iguais)', async () => {
+    await purgeQueue();
     const playerIdValue = playerId();
     const walletId = await createWallet(playerIdValue, '200.00');
     const { data, idempotencyKey } = betData(playerIdValue, walletId, '15.00');
@@ -364,10 +381,12 @@ describe('redelivery: dedup via inbox, sem novo débito', () => {
     // Mesma mensagem com messageId idêntico; MessageDeduplicationId diferente
     // para a fila entregar as duas cópias (o dedup testado aqui é o do inbox,
     // exatamente o redelivery que SQS simula).
-    await send(wagerEnvelope(messageId, data), walletId, messageId);
-    await send(wagerEnvelope(messageId, data), walletId, `${messageId}:2`);
+    const identicalBody = JSON.stringify(wagerEnvelope(messageId, data));
+    await sendBody(identicalBody, walletId, messageId);
+    await sendBody(identicalBody, walletId, `${messageId}:2`);
 
-    const consumer = makeConsumer();
+    const metrics = new MemoryMetrics();
+    const consumer = makeConsumer({ metrics });
     await runUntilEmpty(consumer);
 
     const transactions = await transactionByIdempotencyKey(idempotencyKey);
@@ -393,9 +412,95 @@ describe('redelivery: dedup via inbox, sem novo débito', () => {
       [CONSUMER_NAME, messageId],
     );
     expect(inbox[0]!.count).toBe(1);
+    expect(metrics.counter(WAGER_DUPLICATES_TOTAL, { source: 'inbox' })).toBe(1);
+    await expectNoRedelivery(messageId);
 
     await assertLedgerConsistency(executeShared, walletId);
   }, 60_000);
+
+  test('mesmo messageId com corpo diferente não processa a segunda mensagem e faz ack', async () => {
+    await purgeQueue();
+    const playerIdValue = playerId();
+    const walletId = await createWallet(playerIdValue, '200.00');
+    const first = betData(playerIdValue, walletId, '15.00');
+    const conflicting = betData(playerIdValue, walletId, '25.00');
+    const messageId = `msg-${crypto.randomUUID()}`;
+    const firstBody = JSON.stringify(wagerEnvelope(messageId, first.data));
+    const conflictingBody = JSON.stringify(wagerEnvelope(messageId, conflicting.data));
+    await sendBody(firstBody, walletId, messageId);
+    await sendBody(conflictingBody, walletId, `${messageId}:conflict`);
+
+    const metrics = new MemoryMetrics();
+    const consumer = makeConsumer({ metrics });
+    await runUntilEmpty(consumer);
+
+    expect(await transactionByIdempotencyKey(first.idempotencyKey)).toHaveLength(1);
+    expect(await transactionByIdempotencyKey(conflicting.idempotencyKey)).toHaveLength(0);
+    expect(metrics.counter(WAGER_DUPLICATES_TOTAL, { source: 'inbox' })).toBe(1);
+
+    const wallets = await query<Array<{ balance_amount: string }>>(
+      `SELECT balance_amount FROM wallet WHERE id = ?`,
+      [walletId],
+    );
+    expect(wallets[0]!.balance_amount).toBe('185.00');
+
+    const ledger = await query<Array<{ count: number }>>(
+      `SELECT count(*)::int AS count FROM wallet_ledger_entry WHERE wallet_id = ? AND direction = 'DEBIT'`,
+      [walletId],
+    );
+    expect(ledger[0]!.count).toBe(1);
+    expect(await inboxRows(messageId)).toHaveLength(1);
+    await expectNoRedelivery(messageId);
+    await assertLedgerConsistency(executeShared, walletId);
+  }, 60_000);
+});
+
+describe('retry transitório SQS', () => {
+  test('aplica a visibilidade de retry configurada e processa a redelivery', async () => {
+    await purgeQueue();
+    const playerIdValue = playerId();
+    const walletId = await createWallet(playerIdValue, '50.00');
+    const wager = betData(playerIdValue, walletId, '5.00');
+    const messageId = `msg-${crypto.randomUUID()}`;
+    await send(wagerEnvelope(messageId, wager.data), walletId, messageId);
+
+    let attempts = 0;
+    const transientUseCase: SubmitWagerCommands = {
+      execute: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('PostgreSQL indisponível');
+        }
+        return { outcome: 'INBOX_DUPLICATE' };
+      },
+    };
+    const metrics = new MemoryMetrics();
+    const consumer = new SqsWagerConsumer(
+      transientUseCase,
+      sqs,
+      WAGER_QUEUE_NAME,
+      testOptions({
+        metrics,
+        waitTimeSeconds: 0,
+        visibilityTimeoutSeconds: 30,
+        retryBaseDelaySeconds: 1,
+        retryMaxDelaySeconds: 2,
+      }),
+    );
+
+    await consumer.cycle();
+    expect(attempts).toBe(1);
+
+    const deadline = Date.now() + 5_000;
+    while (attempts < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await consumer.cycle();
+    }
+
+    expect(attempts).toBe(2);
+    expect(metrics.counter(SQS_RETRIES_TOTAL)).toBe(1);
+    await expectNoRedelivery(messageId);
+  }, 15_000);
 });
 
 describe('payload inválido: permanente, NÃO deleta', () => {

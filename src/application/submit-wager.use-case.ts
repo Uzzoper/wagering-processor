@@ -72,12 +72,17 @@ export interface SubmitIdempotencyConflict {
   outcome: 'IDEMPOTENCY_CONFLICT';
 }
 
+export interface SubmitInboxDuplicate {
+  outcome: 'INBOX_DUPLICATE';
+}
+
 export type SubmitWagerResult =
   | SubmitProcessed
   | SubmitRejected
   | SubmitPendingReference
   | SubmitWalletNotFound
-  | SubmitIdempotencyConflict;
+  | SubmitIdempotencyConflict
+  | SubmitInboxDuplicate;
 
 /** Parâmetros de resolução do worker de `PENDING_REFERENCE` (motivo do resume). */
 export interface PendingResolution {
@@ -90,9 +95,11 @@ export interface SubmitWagerContext {
   /**
    * Gancho único da entrada SQS (CHALLENGE §10): dedup persistente via inbox
    * DENTRO da mesma tx SQL (ordem §2: inbox → insert idempotente → lock…).
-   * HTTP não usa; redelivery volta pelo caminho de replay do use case.
+   * HTTP não usa; redelivery duplicada encerra antes de consultar a wallet.
    */
-  beforeRepositories?: (repositories: Repositories) => Promise<unknown>;
+  beforeRepositories?: (
+    repositories: Repositories,
+  ) => Promise<'CONTINUE' | 'DUPLICATE' | void>;
   /**
    * Usado apenas pelo worker 7c: faz RESUME de uma linha `PENDING_REFERENCE`
    * (executa de fato a resolução) em vez de devolver o replay `202` do HTTP.
@@ -144,7 +151,10 @@ export class SubmitWagerTransactionUseCase {
 
     return this.unitOfWork.run(async (repositories): Promise<SubmitWagerResult> => {
       // Inbox (só SQS) é o passo 1 da ordem travada — antes de qualquer SQL de negócio.
-      await context?.beforeRepositories?.(repositories);
+      const inboxDecision = await context?.beforeRepositories?.(repositories);
+      if (inboxDecision === 'DUPLICATE') {
+        return { outcome: 'INBOX_DUPLICATE' };
+      }
 
       const walletRow = await repositories.wallets.findById(input.walletId);
       if (walletRow === undefined) {

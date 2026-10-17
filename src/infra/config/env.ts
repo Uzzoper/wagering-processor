@@ -33,6 +33,8 @@ export interface SqsConfig {
   wagerQueueName: string;
   /** Consumer SQS ligado (`sqs` ∈ `WORKERS_ENABLED`). */
   consumerEnabled: boolean;
+  retryBaseDelaySeconds: number;
+  retryMaxDelaySeconds: number;
 }
 
 /** Parâmetros do publisher da outbox (polling/claim com lease). */
@@ -107,6 +109,19 @@ function parseWorkersEnabled(value: string | undefined): string[] {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const enabled = parseWorkersEnabled(env.WORKERS_ENABLED);
+  const retryBaseDelaySeconds = parsePositiveInt(
+    env.SQS_RETRY_BASE_DELAY_SECONDS,
+    30,
+    'SQS_RETRY_BASE_DELAY_SECONDS',
+  );
+  const retryMaxDelaySeconds = parsePositiveInt(
+    env.SQS_RETRY_MAX_DELAY_SECONDS,
+    3_600,
+    'SQS_RETRY_MAX_DELAY_SECONDS',
+  );
+  if (retryMaxDelaySeconds < retryBaseDelaySeconds || retryMaxDelaySeconds > 43_200) {
+    throw new Error('SQS_RETRY_MAX_DELAY_SECONDS deve ser >= SQS_RETRY_BASE_DELAY_SECONDS e <= 43200');
+  }
   return {
     port: parsePort(env.PORT, 3000),
     logLevel: parseLogLevel(env.LOG_LEVEL, 'info'),
@@ -131,6 +146,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       eventsQueueName: env.SQS_EVENTS_QUEUE ?? 'wager-events.fifo',
       wagerQueueName: env.SQS_WAGER_QUEUE ?? 'wager-transactions.fifo',
       consumerEnabled: enabled.includes('sqs'),
+      retryBaseDelaySeconds,
+      retryMaxDelaySeconds,
     },
     outbox: {
       enabled: enabled.includes('outbox'),

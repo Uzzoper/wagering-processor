@@ -102,6 +102,8 @@ export class WageringController {
           FailureCodes.IdempotencyConflict,
           `idempotency key "${key}" was already used with a different payload`,
         );
+      case 'INBOX_DUPLICATE':
+        throw new Error('Inbox duplicate outcome is only valid for SQS submissions');
     }
   }
 

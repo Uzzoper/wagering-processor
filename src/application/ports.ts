@@ -99,13 +99,18 @@ export interface EventPublisherPort {
   publish(request: PublishRequest): Promise<void>;
 }
 
+export type InboxInsertResult =
+  | { inserted: true }
+  | { inserted: false; existingPayloadHash: string };
+
 export interface InboxStore {
   /**
    * Dedup persistente do consumer SQS, dento da MESMA tx do use case:
    * `INSERT ... ON CONFLICT (consumer_name, message_id) DO NOTHING RETURNING`
-   * — `false` = redelivery da mensagem (nunca captura `23505`: abortaria a tx).
+   * Retorna também o hash armazenado para identificar colisão de conteúdo.
+   * Nunca captura `23505`: isso abortaria a tx.
    */
-  tryInsert(message: InboxMessage): Promise<boolean>;
+  tryInsert(message: InboxMessage): Promise<InboxInsertResult>;
 }
 
 /** Repositórios vinculados ao mesmo `EntityManager` (e à mesma tx SQL). */
