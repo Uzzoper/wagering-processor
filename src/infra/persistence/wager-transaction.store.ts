@@ -82,7 +82,17 @@ function mapRow(row: Record<string, unknown>): StoredTransaction {
     observedAmount === null
       ? Money.zero(observedCurrency)
       : Money.from({ amount: observedAmount, currency: observedCurrency });
-  return { transaction, observedBalance };
+  // Estado pendente é derivado das colunas dedicadas (worker de PENDING_REFERENCE).
+  const pendingSince = row.pending_since as Date | null;
+  const pending =
+    pendingSince === null
+      ? undefined
+      : {
+          retryAttempts: row.retry_attempts as number,
+          pendingSince,
+          nextRetryAt: row.next_retry_at as Date,
+        };
+  return { transaction, observedBalance, pending };
 }
 
 /** INSERT puro via SQL (nunca ORM save); leitura reconstrói o domínio via `rehydrate`. */
@@ -166,6 +176,33 @@ export class MikroOrmTransactionStore implements TransactionStore {
       `reference_transaction_id = ? AND kind IN ('REFUND', 'ROLLBACK') AND status = 'PROCESSED'`,
       [referenceTransactionId],
     );
+  }
+
+  /**
+   * Claim com lease (arquétipo outbox §5): `SKIP LOCKED` — dois workers nunca
+   * claimam a mesma linha; o lease adianta `next_retry_at`, então a linha
+   * volta a ficar vencida sozinha se a instância morrer depois do UPDATE.
+   */
+  async claimPendingReference(
+    limit: number,
+    now: Date,
+    leaseMs: number,
+  ): Promise<StoredTransaction[]> {
+    const leaseNextRetryAt = new Date(now.getTime() + leaseMs);
+    const rows = await this.em.execute<Array<Record<string, unknown>>>(
+      `UPDATE wager_transaction
+          SET next_retry_at = ?
+        WHERE id IN (
+          SELECT id FROM wager_transaction
+           WHERE status = 'PENDING_REFERENCE' AND next_retry_at <= ?
+           ORDER BY created_at
+           LIMIT ?
+           FOR UPDATE SKIP LOCKED
+        )
+        RETURNING ${SELECT_COLUMNS}`,
+      [leaseNextRetryAt, now, limit],
+    );
+    return rows.map((row) => mapRow(row));
   }
 
   private async findOne(where: string, params: unknown[]): Promise<StoredTransaction | undefined> {

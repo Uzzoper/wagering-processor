@@ -19,6 +19,11 @@ import {
   WagerTransactionKind,
   WagerTransactionStatus,
 } from '../domain/wager-transaction';
+import {
+  PENDING_REF_BACKOFF_BASE_MS,
+  pendingRefBackoffMs,
+  pendingRefExpired,
+} from '../domain/pending-reference-policy';
 import { payloadHash } from './payload-hash';
 import type { Repositories, StoredTransaction, UnitOfWork } from './ports';
 
@@ -73,6 +78,13 @@ export type SubmitWagerResult =
   | SubmitWalletNotFound
   | SubmitIdempotencyConflict;
 
+/** Parâmetros de resolução do worker de `PENDING_REFERENCE` (motivo do resume). */
+export interface PendingResolution {
+  now: Date;
+  ttlHours: number;
+  maxAttempts: number;
+}
+
 export interface SubmitWagerContext {
   /**
    * Gancho único da entrada SQS (CHALLENGE §10): dedup persistente via inbox
@@ -80,6 +92,11 @@ export interface SubmitWagerContext {
    * HTTP não usa; redelivery volta pelo caminho de replay do use case.
    */
   beforeRepositories?: (repositories: Repositories) => Promise<unknown>;
+  /**
+   * Usado apenas pelo worker 7c: faz RESUME de uma linha `PENDING_REFERENCE`
+   * (executa de fato a resolução) em vez de devolver o replay `202` do HTTP.
+   */
+  pendingResolution?: PendingResolution;
 }
 
 /**
@@ -147,7 +164,7 @@ export class SubmitWagerTransactionUseCase {
         if (existing === undefined) {
           continue;
         }
-        return this.replay(existing, hash);
+        return this.replay(existing, hash, input, repositories, context);
       }
       throw new Error('idempotency race exhausted after rollback; retryable');
     });
@@ -172,10 +189,13 @@ export class SubmitWagerTransactionUseCase {
     return undefined;
   }
 
-  private replay(
+  private async replay(
     existing: { stored: StoredTransaction; byKey: boolean },
     hash: string,
-  ): SubmitWagerResult {
+    input: SubmitWagerInput,
+    repositories: Repositories,
+    context?: SubmitWagerContext,
+  ): Promise<SubmitWagerResult> {
     const { transaction, observedBalance } = existing.stored;
     if (!existing.byKey || !transaction.matchesPayload(hash)) {
       return { outcome: 'IDEMPOTENCY_CONFLICT' };
@@ -193,11 +213,116 @@ export class SubmitWagerTransactionUseCase {
           failureCode: transaction.failureCode as FailureCode,
         };
       case WagerTransactionStatus.PendingReference:
-        return { outcome: 'PENDING_REFERENCE', transaction, observedBalance, replay: true };
+        // Sem opções de resolução (HTTP): o worker ainda não resolveu — replay 202.
+        if (context?.pendingResolution === undefined) {
+          return { outcome: 'PENDING_REFERENCE', transaction, observedBalance, replay: true };
+        }
+        // Worker 7c: reprocessa de verdade pelo mesmo caminho ("resume", §5).
+        return this.resumePendingReference(
+          repositories,
+          existing.stored,
+          context.pendingResolution,
+          input.correlationId ?? crypto.randomUUID(),
+        );
       default:
         // PENDING transitório visível no replay: o processamento original ainda commita.
         return { outcome: 'PENDING_REFERENCE', transaction, observedBalance, replay: true };
     }
+  }
+
+  /**
+   * Resume do worker 7c dentro da MESMA tx: lock da wallet → re-leitura
+   * anti-corrida → expirou rejeita, senão reaplica a reversão. Nunca confia na
+   * cópia claimada: a linha fresca sob o lock é a fonte da verdade.
+   */
+  private async resumePendingReference(
+    repositories: Repositories,
+    stored: StoredTransaction,
+    resolution: PendingResolution,
+    correlationId: string,
+  ): Promise<SubmitWagerResult> {
+    const wallet = await repositories.wallets.findByIdForUpdate(
+      stored.transaction.walletId,
+    );
+    if (wallet === undefined) {
+      // Impossível: sem DELETE no schema (mesmo motivo de processNew).
+      throw new Error('wallet vanished under lock');
+    }
+
+    // Anti-corrida: pode ter virado terminal entre o claim e o lock da wallet.
+    const fresh = await repositories.transactions.findById(stored.transaction.id);
+    if (fresh === undefined) {
+      throw new Error('pending transaction vanished under lock');
+    }
+    if (fresh.transaction.isTerminal()) {
+      return this.replayTerminal(fresh);
+    }
+
+    // stored.pending por construção (linha veio do claim por status).
+    const pending = fresh.pending!;
+    if (
+      pendingRefExpired(
+        pending.pendingSince,
+        pending.retryAttempts,
+        resolution.now,
+        resolution.ttlHours,
+        resolution.maxAttempts,
+      )
+    ) {
+      return this.reject(
+        repositories,
+        fresh.transaction,
+        wallet.balance,
+        FailureCodes.ReferenceNotFound,
+        resolution.now,
+        correlationId,
+      );
+    }
+
+    return this.applyReversal(
+      repositories,
+      fresh.transaction,
+      this.reversalInput(fresh.transaction),
+      wallet,
+      fresh.transaction.money,
+      resolution.now,
+      correlationId,
+      {
+        retryAttempts: pending.retryAttempts,
+        pendingSince: pending.pendingSince,
+      },
+    );
+  }
+
+  /** Replay exato de um terminal já resolvido (nada duplica). */
+  private replayTerminal(stored: StoredTransaction): SubmitRejected | SubmitProcessed {
+    const { transaction, observedBalance } = stored;
+    if (transaction.status === WagerTransactionStatus.Rejected) {
+      return {
+        outcome: 'REJECTED',
+        transaction,
+        observedBalance,
+        replay: true,
+        failureCode: transaction.failureCode as FailureCode,
+      };
+    }
+    return { outcome: 'PROCESSED', transaction, observedBalance, replay: true };
+  }
+
+  /** Reconstrói o input de reversão a partir dos campos da própria linha. */
+  private reversalInput(transaction: WagerTransaction): SubmitWagerInput {
+    return {
+      idempotencyKey: transaction.idempotencyKey,
+      providerId: transaction.providerId,
+      externalTransactionId: transaction.externalTransactionId,
+      playerId: transaction.playerId,
+      walletId: transaction.walletId,
+      roundId: transaction.roundId,
+      gameId: transaction.gameId,
+      kind: transaction.kind,
+      money: transaction.money.toJSON(),
+      referenceExternalTransactionId: transaction.referenceExternalTransactionId ?? null,
+    };
   }
 
   private async processNew(
@@ -317,6 +442,7 @@ export class SubmitWagerTransactionUseCase {
     money: Money,
     now: Date,
     correlationId: string,
+    resumeDefer?: { retryAttempts: number; pendingSince: Date },
   ): Promise<SubmitWagerResult> {
     const reference = await repositories.transactions.findByProviderExternal(
       input.providerId,
@@ -326,7 +452,23 @@ export class SubmitWagerTransactionUseCase {
       reference === undefined ||
       reference.transaction.status === WagerTransactionStatus.PendingReference
     ) {
-      return this.deferPendingReference(repositories, transaction, wallet.balance, now, correlationId);
+      // Referência ausente/ainda pendente: primeiro defer emite evento; renovação do worker não.
+      if (resumeDefer === undefined) {
+        return this.deferPendingReference(
+          repositories,
+          transaction,
+          wallet.balance,
+          now,
+          correlationId,
+        );
+      }
+      return this.renewPendingReference(
+        repositories,
+        transaction,
+        wallet.balance,
+        now,
+        resumeDefer,
+      );
     }
     if (
       reference.transaction.status === WagerTransactionStatus.Rejected ||
@@ -465,11 +607,33 @@ export class SubmitWagerTransactionUseCase {
     await repositories.transactions.update(transaction, observedBalance, {
       retryAttempts: 0,
       pendingSince: now,
-      nextRetryAt: new Date(now.getTime() + 30_000),
+      nextRetryAt: new Date(now.getTime() + PENDING_REF_BACKOFF_BASE_MS),
     });
+    // Só o PRIMEIRO defer emite WagerTransactionPendingReference (renovação não duplica).
     await repositories.outbox.insert([
       WagerTransactionPendingReference.from(transaction, observedBalance, { correlationId }),
     ]);
+    return { outcome: 'PENDING_REFERENCE', transaction, observedBalance, replay: false };
+  }
+
+  /**
+   * Renovação pelo worker 7c (resume): attempts+1 com backoff exponencial com
+   * jitter; SEM evento na outbox (o PendingReference só nasce no primeiro defer).
+   */
+  private async renewPendingReference(
+    repositories: Repositories,
+    transaction: WagerTransaction,
+    observedBalance: Money,
+    now: Date,
+    resumeDefer: { retryAttempts: number; pendingSince: Date },
+  ): Promise<SubmitPendingReference> {
+    const attempts = resumeDefer.retryAttempts + 1;
+    const nextRetryAt = new Date(now.getTime() + pendingRefBackoffMs(attempts));
+    await repositories.transactions.update(transaction, observedBalance, {
+      retryAttempts: attempts,
+      pendingSince: resumeDefer.pendingSince,
+      nextRetryAt,
+    });
     return { outcome: 'PENDING_REFERENCE', transaction, observedBalance, replay: false };
   }
 }

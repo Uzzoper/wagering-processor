@@ -6,6 +6,11 @@ import type { WagerTransaction } from '../domain/wager-transaction';
 import type { Wallet } from '../domain/wallet';
 import type { WalletLedgerEntry } from '../domain/wallet-ledger-entry';
 
+/** Fonte de tempo injetável (testes usam clock fake; nunca sleep real). */
+export interface Clock {
+  now(): Date;
+}
+
 export interface WalletRepository {
   /** `INSERT ... ON CONFLICT (player_id, currency) DO NOTHING RETURNING`; `false` = já existia. */
   insertIfAbsent(wallet: Wallet): Promise<boolean>;
@@ -16,10 +21,11 @@ export interface WalletRepository {
   update(wallet: Wallet): Promise<void>;
 }
 
-/** Transação lida + saldo observado guardado (para replay exato). */
+/** Transação lida + saldo observado guardado + estado pendente (worker 7c). */
 export interface StoredTransaction {
   transaction: WagerTransaction;
   observedBalance: Money;
+  pending?: PendingState;
 }
 
 /** Estado de `PENDING_REFERENCE` (worker resolve depois; sem ele, tudo NULL). */
@@ -52,6 +58,11 @@ export interface TransactionStore {
   ): Promise<StoredTransaction | undefined>;
   /** Reversão `PROCESSED` existente da referência (no máximo uma, pelo índice parcial). */
   findProcessedReversalOf(referenceTransactionId: string): Promise<StoredTransaction | undefined>;
+  /**
+   * Claim de linhas `PENDING_REFERENCE` vencidas com lease + `SKIP LOCKED`
+   * (arquétipo do claim da outbox §5): adianta `next_retry_at` em `leaseMs`.
+   */
+  claimPendingReference(limit: number, now: Date, leaseMs: number): Promise<StoredTransaction[]>;
 }
 
 export interface LedgerStore {
