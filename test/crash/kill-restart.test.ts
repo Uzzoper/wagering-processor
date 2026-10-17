@@ -12,7 +12,7 @@ import {
   makeSqsClient,
   pollReceive,
 } from '../helpers/sqs-suite';
-import { assertLedgerConsistency } from './ledger-consistency';
+import { assertLedgerConsistency } from '../integration/ledger-consistency';
 
 /**
  * Fatia 7d — SIGKILL com substituição de sistema (30 wallets, carga mista

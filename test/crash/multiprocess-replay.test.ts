@@ -13,7 +13,7 @@ import {
   makeSqsClient,
   pollReceive,
 } from '../helpers/sqs-suite';
-import { assertLedgerConsistency } from './ledger-consistency';
+import { assertLedgerConsistency } from '../integration/ledger-consistency';
 
 /**
  * Fatia 7d — carga multiprocesso: 3 instâncias reais (api,outbox,pending) nas

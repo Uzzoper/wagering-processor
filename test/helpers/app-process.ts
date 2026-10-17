@@ -26,6 +26,20 @@ export interface SpawnAppOptions {
   env?: Record<string, string | undefined>;
 }
 
+/** Filhos vivos da suíte: no exit do runner (mesmo com teste falhado ou
+ * beforeAll abortado), SIGKILL de cauda sincrônico — nenhum app sobrevive. */
+const ALIVE = new Set<Bun.Subprocess>();
+
+process.on('exit', () => {
+  for (const child of ALIVE) {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // já saído
+    }
+  }
+});
+
 /** A porta precisa estar LIVRE antes do spawn: um processo órfão de rodada
  * interrompida responde /health/live e a readiness "valida" o processo morto
  * (o filho real morre de EADDRINUSE). Pre-checagem converte isso em falha
@@ -60,6 +74,8 @@ export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
     stdout: 'ignore',
     stderr: 'inherit',
   });
+  ALIVE.add(proc);
+  void proc.exited.then(() => ALIVE.delete(proc));
 
   const deadline = Date.now() + 20_000;
   for (;;) {
@@ -105,9 +121,27 @@ export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
       } catch {
         // já saído
       }
-      return Number(await proc.exited);
+      // SIGTERM com prazo; sem resposta limpa, SIGKILL — o afterAll nunca
+      // pendura nem deixa órfão, com teste verde ou falhado.
+      const deadline = Date.now() + 5_000;
+      while (proc.exitCode === null && proc.signalCode === null && Date.now() < deadline) {
+        await Bun.sleep(100);
+      }
+      if (proc.exitCode === null && proc.signalCode === null) {
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          // já saído
+        }
+      }
+      return Number(await Promise.race([proc.exited, Bun.sleep(3_000).then(() => -1)]));
     },
   };
+}
+
+/** Para todos os apps da suíte de uma vez (nunca lança; usado no afterAll). */
+export async function stopAllApps(apps: readonly SpawnApp[]): Promise<void> {
+  await Promise.all(apps.map((app) => app.stop().catch(() => undefined)));
 }
 
 export type SpawnApp = Awaited<ReturnType<typeof spawnApp>>;

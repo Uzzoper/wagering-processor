@@ -4,7 +4,7 @@ import type { Subprocess } from 'bun';
 import { resolve } from 'node:path';
 
 import { buildMikroOrmConfig } from '../../src/infra/mikro-orm.config';
-import { assertLedgerConsistency } from './ledger-consistency';
+import { assertLedgerConsistency } from '../integration/ledger-consistency';
 
 /**
  * Fatia 6 — ≥3 instâncias reais em processos separados (HTTP de verdade),

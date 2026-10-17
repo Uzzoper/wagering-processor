@@ -9,7 +9,9 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "start:dev": "bun --watch src/main.ts",
-    "test": "bun test",
+    "test": "bun test test/unit test/integration",
+    "test:crash": "bun test test/crash",
+    "test:all": "bun test",
     "typecheck": "tsc --noEmit",
     "migration:up": "bun run scripts/migrate.ts up",
     "migration:down": "bun run scripts/migrate.ts down"

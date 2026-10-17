@@ -24,8 +24,9 @@ bun run index.ts
 ```bash
 bun install
 bun run start
-bun test
-bun run test:integration
+bun run test        # unit + integração leve (~33s)
+bun run test:crash  # multiprocesso, kill e restart (~142s)
+bun run test:all    # tudo, igual a `bun test` (~170s)
 bun run migration:up / migration:down
 bun run test:load # diferencial opcional
 ```
@@ -41,7 +42,8 @@ src/
 test/
   unit/
   integration/  # PG + LocalStack reais
-  concurrency/  # races reais, >=3 instâncias
+  crash/        # multiprocesso, kill e restart (processos reais)
+  helpers/      # spawn de processos do app e filas SQS privadas por suíte
 ```
 
 ## Regras inegociáveis

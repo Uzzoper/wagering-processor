@@ -34,11 +34,11 @@
 - `src/application/`: use-case compartilhado HTTP+SQS.
 - `src/infra/`: entities MikroORM, migrations reversíveis, SQS/inbox/outbox workers, logs/métricas.
 - `src/api/`: controllers, DTOs com `MoneyProps` string.
-- `test/unit|integration|concurrency/`: integração/concorrência com PG+SQS reais, invariante final `wallet.balance == ledger`.
+- `test/unit|integration|crash/`: integração com PG+SQS reais; suítes multiprocesso/kill/restart vivem em `test/crash/`; invariante final `wallet.balance == ledger`.
 
 ## Testes e observabilidade
 
-- `bun test` para tudo. Concurrency com paralelismo real (50x replay, 100/80x2, ≥3 instâncias, kill após commit antes do ack, REFUND antes da ref).
+- Scripts de teste (tempos medidos nesta máquina): `bun run test` — unit + integração leve, ~33s; `bun run test:crash` — multiprocesso, kill e restart com processos reais, ~142s; `bun run test:all` — tudo, igual a `bun test`, ~170s. Paralelismo real: 50x replay, 100/80x2, ≥3 instâncias, kill após commit antes do ack, REFUND antes da ref.
 - Testes de integração usam o banco `wagering_test` (nunca o de desenvolvimento). O schema sobe uma vez no preload; nenhum teste faz `down()` nem `TRUNCATE`. Cada teste usa UUIDs próprios.
 - Postgres do compose na porta 5433.
 - Antes de qualquer commit: `bun run typecheck` e `bun test` verdes.
