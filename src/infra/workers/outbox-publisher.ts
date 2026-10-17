@@ -9,8 +9,10 @@ import {
   EVENT_PUBLISHER,
   UNIT_OF_WORK,
   type EventPublisherPort,
+  type MetricsPort,
   type UnitOfWork,
 } from '../../application/ports';
+import { OUTBOX_PUBLISH_ERRORS_TOTAL } from '../../application/metric-names';
 import type { OutboxMessage } from '../../domain/outbox-message';
 import { logEvent } from '../observability/json-logger';
 
@@ -20,6 +22,8 @@ export interface OutboxPublisherOptions {
   pollIntervalMs: number;
   batchSize: number;
   leaseMs: number;
+  /** Registry da casa (fatia 8b): erros de publicação. */
+  metrics?: MetricsPort;
 }
 
 /**
@@ -40,6 +44,10 @@ export class OutboxPublisherWorker implements OnModuleInit, OnApplicationShutdow
     @Inject(EVENT_PUBLISHER) private readonly publisher: EventPublisherPort,
     private readonly options: OutboxPublisherOptions,
   ) {}
+
+  private incrementPublishError(): void {
+    this.options.metrics?.increment(OUTBOX_PUBLISH_ERRORS_TOTAL);
+  }
 
   onModuleInit(): void {
     if (this.options.enabled) {
@@ -141,6 +149,7 @@ export class OutboxPublisherWorker implements OnModuleInit, OnApplicationShutdow
   }
 
   private async retryLater(message: OutboxMessage, error: unknown): Promise<void> {
+    this.incrementPublishError();
     message.scheduleRetry(new Date());
     const nextAttemptAt = message.nextAttemptAt;
     if (nextAttemptAt === undefined) {

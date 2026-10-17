@@ -1,13 +1,20 @@
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { Module } from '@nestjs/common';
 
-import { EVENT_PUBLISHER, UNIT_OF_WORK, type UnitOfWork } from '../../application/ports';
+import { EVENT_PUBLISHER, METRICS, UNIT_OF_WORK } from '../../application/ports';
+import type {
+  EventPublisherPort,
+  MetricsPort,
+  UnitOfWork,
+} from '../../application/ports';
 import { SubmitWagerTransactionUseCase } from '../../application/submit-wager.use-case';
 import { SYSTEM_CLOCK } from '../config/clock';
 import { loadConfig } from '../config/env';
 import { OutboxPublisherWorker } from '../workers/outbox-publisher';
 import { PendingReferenceWorker } from '../workers/pending-reference-worker';
+import { InstrumentedSubmitWagerUseCase } from '../observability/submit-metrics';
 import { SqsEventPublisher } from './sqs-event-publisher';
+import { SqsGauges } from './sqs-gauges';
 import { SqsWagerConsumer } from './sqs-wager-consumer';
 
 const SQS_CLIENT = Symbol('SqsClient');
@@ -19,6 +26,8 @@ export const SQS_CLIENT_TOKEN = SQS_CLIENT;
  * Adaptador SQS + workers (outbox publisher, consumer e worker de pendências).
  * Os workers se auto-ligam em `onModuleInit` quando `WORKERS_ENABLED`
  * contém `outbox`/`sqs`/`pending` (default: `api,outbox,sqs,pending`).
+ * As submissões passam pelo decorador instrumentado — contadores/latência
+ * convergem no mesmo registry (`MetricsModule`) em todos os caminhos.
  */
 @Module({
   providers: [
@@ -50,37 +59,52 @@ export const SQS_CLIENT_TOKEN = SQS_CLIENT;
     },
     {
       provide: OutboxPublisherWorker,
-      useFactory: (unitOfWork, publisher) => {
+      useFactory: (
+        unitOfWork: UnitOfWork,
+        publisher: EventPublisherPort,
+        metrics: MetricsPort,
+      ) => {
         const { outbox } = loadConfig();
         return new OutboxPublisherWorker(unitOfWork, publisher, {
           enabled: outbox.enabled,
           pollIntervalMs: outbox.pollIntervalMs,
           batchSize: outbox.batchSize,
           leaseMs: outbox.leaseMs,
+          metrics,
         });
       },
-      inject: [UNIT_OF_WORK, EVENT_PUBLISHER],
+      inject: [UNIT_OF_WORK, EVENT_PUBLISHER, METRICS],
     },
     {
       provide: SqsWagerConsumer,
-      useFactory: (unitOfWork: UnitOfWork, client: SQSClient) => {
+      useFactory: (
+        unitOfWork: UnitOfWork,
+        client: SQSClient,
+        metrics: MetricsPort,
+      ) => {
         const { sqs } = loadConfig();
         return new SqsWagerConsumer(
-          new SubmitWagerTransactionUseCase(unitOfWork),
+          new InstrumentedSubmitWagerUseCase(
+            new SubmitWagerTransactionUseCase(unitOfWork),
+            metrics,
+          ),
           client,
           sqs.wagerQueueName,
-          { enabled: sqs.consumerEnabled },
+          { enabled: sqs.consumerEnabled, metrics },
         );
       },
-      inject: [UNIT_OF_WORK, SQS_CLIENT],
+      inject: [UNIT_OF_WORK, SQS_CLIENT, METRICS],
     },
     {
       provide: PendingReferenceWorker,
-      useFactory: (unitOfWork: UnitOfWork) => {
+      useFactory: (unitOfWork: UnitOfWork, metrics: MetricsPort) => {
         const { pendingRef } = loadConfig();
         return new PendingReferenceWorker(
           unitOfWork,
-          new SubmitWagerTransactionUseCase(unitOfWork),
+          new InstrumentedSubmitWagerUseCase(
+            new SubmitWagerTransactionUseCase(unitOfWork),
+            metrics,
+          ),
           {
             enabled: pendingRef.enabled,
             pollIntervalMs: pendingRef.pollIntervalMs,
@@ -91,9 +115,24 @@ export const SQS_CLIENT_TOKEN = SQS_CLIENT;
           },
         );
       },
-      inject: [UNIT_OF_WORK],
+      inject: [UNIT_OF_WORK, METRICS],
     },
+    {
+      provide: 'SQS_GAUGES_DEPS',
+      useFactory: (client: SQSClient, metrics: MetricsPort) => {
+        const { sqs } = loadConfig();
+        return { sqs: client, wagerQueueName: sqs.wagerQueueName, registry: metrics };
+      },
+      inject: [SQS_CLIENT, METRICS],
+    },
+    SqsGauges,
   ],
-  exports: [SQS_CLIENT_TOKEN, EVENT_PUBLISHER, OutboxPublisherWorker, SqsWagerConsumer, PendingReferenceWorker],
+  exports: [
+    SQS_CLIENT_TOKEN,
+    EVENT_PUBLISHER,
+    OutboxPublisherWorker,
+    SqsWagerConsumer,
+    PendingReferenceWorker,
+  ],
 })
 export class SqsModule {}

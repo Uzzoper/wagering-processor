@@ -171,9 +171,53 @@ export interface WalletReadStore {
   reconcile(walletId: string): Promise<WalletReconciliationData | undefined>;
 }
 
-/** Porta de métricas: fase 8a apenas incrementa; a 8b trará a exposição HTTP. */
+/** Rótulos de uma série de métrica (ex.: `{ status: 'PROCESSED', kind: 'BET' }`). */
+export type MetricLabels = Readonly<Record<string, string>>;
+
+/** Amostra de uma série (counter/gauge) pronta para exposição. */
+export interface MetricSample {
+  readonly labels: MetricLabels;
+  readonly value: number;
+}
+
+/**
+ * Histograma pronto para exposição: uma série por combinação de labels,
+ * render como `_bucket{le=...}` + `_sum` + `_count` (acumulativo do Prometheus).
+ */
+export interface MetricHistogram {
+  readonly labels: MetricLabels;
+  readonly buckets: readonly number[];
+  /** Cumulativa por bucket (`le`): quanto de amostras caiu ATÉ o bucket. */
+  readonly bucketCounts: readonly [number, number][];
+  readonly sum: number;
+  readonly count: number;
+}
+
+export interface MetricFamily {
+  /** Nome canonical (sem labels): base do HELP/TYPE da exposição. */
+  readonly name: string;
+  readonly type: 'counter' | 'gauge' | 'histogram';
+  /** Counter/gauge: amostras; histograma: histogramas por série de labels. */
+  readonly samples?: readonly MetricSample[];
+  readonly histograms?: readonly MetricHistogram[];
+}
+
+/**
+ * Porta de métricas (fatia 8b): registries em memória — counter com labels,
+ * histograma de latência e gauge computado no scrape. A exposição Prometheus é
+ * responsabilidade da borda (`/metrics`), não de quem instrumenta.
+ */
 export interface MetricsPort {
-  increment(name: string): void;
+  /** Incrementa o counter `name[labels]` (+1). */
+  increment(name: string, labels?: MetricLabels): void;
+  /** Leitura direta de counter (usado nos testes). */
+  counter(name: string, labels?: MetricLabels): number;
+  /** Observação de latência (histograma). */
+  observe(name: string, valueMs: number): void;
+  /** Gauge computado no scrape (p. ex. GAUGE de DLQ/outbox lag com cache). */
+  setGauge(name: string, read: () => Promise<number>): void;
+  /** Retrato completo para a borda `/metrics`. */
+  snapshot(): Promise<readonly MetricFamily[]>;
 }
 
 /** Nome travado do contador de divergência de reconciliação. */

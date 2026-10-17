@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 
-import type { LogContext } from './log-context';
 import { runWithLogContext, sanitizeCorrelationId } from './log-context';
 
 /**
@@ -11,6 +10,8 @@ import { runWithLogContext, sanitizeCorrelationId } from './log-context';
  */
 interface CorrelationRequest {
   headers?: Record<string, unknown>;
+  /** A borda entrega o valor ao use case (controller) sem importar o ALS. */
+  correlationId?: string;
 }
 
 interface CorrelationResponse {
@@ -22,7 +23,8 @@ type NextFunction = () => void;
 /**
  * Borda HTTP (CHALLENGE §12): lê/gera `X-Correlation-Id`, ecoa no header da
  * resposta e abre o escopo ALS do request — correlationId chega ao use case e
- * aos logs sem passar por cada camada.
+ * aos logs sem passar por cada camada. Também grava o valor no request para o
+ * controller consumir (a `api` não importa `infra`).
  */
 export function correlationMiddleware(
   request: CorrelationRequest,
@@ -32,9 +34,7 @@ export function correlationMiddleware(
   const header = request.headers?.['x-correlation-id'];
   const incoming = Array.isArray(header) ? header[0] : header;
   const found = sanitizeCorrelationId(incoming);
-  const context: LogContext = {
-    correlationId: found ?? crypto.randomUUID(),
-  };
-  response.setHeader('X-Correlation-Id', context.correlationId!);
-  runWithLogContext(context, next);
+  request.correlationId = found ?? randomUUID();
+  response.setHeader('X-Correlation-Id', request.correlationId);
+  runWithLogContext({ correlationId: request.correlationId }, next);
 }

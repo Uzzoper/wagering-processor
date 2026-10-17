@@ -12,6 +12,8 @@ export interface DatabaseConfig {
   name: string;
   user: string;
   password: string;
+  /** `lock_timeout` local da tx (ms) — default 3000 (§11: SET LOCAL 3s). */
+  lockTimeoutMs: number;
 }
 
 /** Quais processos este serviço roda: `WORKERS_ENABLED=api,outbox,sqs,pending`. */
@@ -114,6 +116,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       name: env.DB_NAME ?? 'wagering',
       user: env.DB_USER ?? 'wagering',
       password: env.DB_PASSWORD ?? 'wagering',
+      lockTimeoutMs: parsePositiveInt(
+        env.DB_LOCK_TIMEOUT_MS,
+        3_000,
+        'DB_LOCK_TIMEOUT_MS',
+      ),
     },
     workers: { enabled },
     sqs: {

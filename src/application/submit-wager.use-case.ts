@@ -100,6 +100,15 @@ export interface SubmitWagerContext {
 }
 
 /**
+ * Contrato estrutural do executor de submissão: o use case concreto e o
+ * decorador instrumentado (infra/observability) o cumprem — consumidores de
+ * borda tipam por aqui, sem acoplar à classe concreta.
+ */
+export interface SubmitWagerCommands {
+  execute(input: SubmitWagerInput, context?: SubmitWagerContext): Promise<SubmitWagerResult>;
+}
+
+/**
  * Submete uma transação de aposta. Mesma ordem e garantias do ARCHITECTURE §2:
  * existência → insert idempotente → lock → regra no domínio → persistir → commit.
  * Rejeição de negócio RETORNA resultado (nunca lança); só infra lança (rollback).

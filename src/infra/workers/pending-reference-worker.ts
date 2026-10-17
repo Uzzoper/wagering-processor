@@ -1,7 +1,7 @@
 import type { OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 
 import {
-  SubmitWagerTransactionUseCase,
+  type SubmitWagerCommands,
   type SubmitWagerInput,
 } from '../../application/submit-wager.use-case';
 import type { Clock, StoredTransaction, UnitOfWork } from '../../application/ports';
@@ -52,7 +52,7 @@ export class PendingReferenceWorker implements OnModuleInit, OnApplicationShutdo
 
   constructor(
     private readonly unitOfWork: UnitOfWork,
-    private readonly submit: SubmitWagerTransactionUseCase,
+    private readonly submit: SubmitWagerCommands,
     options: PendingReferenceWorkerOptions,
   ) {
     this.options = withDefaults(options);

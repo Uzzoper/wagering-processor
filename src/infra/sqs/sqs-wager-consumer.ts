@@ -11,11 +11,14 @@ import {
 } from '@aws-sdk/client-sqs';
 
 import { logEvent } from '../observability/json-logger';
+import { withLogContextFields } from '../observability/log-context';
 import {
-  SubmitWagerTransactionUseCase,
+  type SubmitWagerCommands,
   type SubmitWagerInput,
   type SubmitWagerResult,
 } from '../../application/submit-wager.use-case';
+import { SQS_RETRIES_TOTAL, WAGER_DUPLICATES_TOTAL } from '../../application/metric-names';
+import type { MetricsPort } from '../../application/ports';
 import { WagerInputError, parseWagerInput, type WagerInputBody } from '../../application/wager-input';
 import { InboxMessage } from '../../domain/inbox-message';
 
@@ -46,13 +49,15 @@ export interface SqsWagerConsumerOptions {
   /**
    * Hook de teste/fault-injection: roda antes do DELETE (ack); lançar dele
    * simula morte pós-commit — a mensagem NÃO é deletada e o redelivery
-   * entre pelo replay via inbox.
+   * entra pelo replay via inbox.
    */
   beforeAck?: (messageId: string) => Promise<void>;
+  /** Registry da casa (fatia 8b): retries de SQS e duplicata por inbox. */
+  metrics?: MetricsPort;
 }
 
 interface ConsumerRuntimeOptions
-  extends Required<Omit<SqsWagerConsumerOptions, 'enabled' | 'beforeAck'>> {}
+  extends Required<Omit<SqsWagerConsumerOptions, 'enabled' | 'beforeAck' | 'metrics'>> {}
 
 function withDefaults(options: SqsWagerConsumerOptions): ConsumerRuntimeOptions {
   return {
@@ -63,6 +68,11 @@ function withDefaults(options: SqsWagerConsumerOptions): ConsumerRuntimeOptions 
     pollIntervalMs: options.pollIntervalMs ?? 100,
     consumerName: options.consumerName ?? SQS_WAGER_CONSUMER_NAME,
   };
+}
+
+/** Registry injetado à parte (não faz parte do runtime numérico). */
+function withMetrics(options: SqsWagerConsumerOptions): MetricsPort | undefined {
+  return options.metrics;
 }
 
 /**
@@ -85,8 +95,10 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
   /** Receipt → messageId das mensagens em voo (para o heartbeat). */
   private inFlight = new Map<string, string>();
 
+  private readonly useCaseMetrics?: MetricsPort;
+
   constructor(
-    private readonly useCase: SubmitWagerTransactionUseCase,
+    private readonly useCase: SubmitWagerCommands,
     private readonly client: SQSClient,
     private readonly queueName: string,
     options: SqsWagerConsumerOptions,
@@ -94,6 +106,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     this.options = withDefaults(options);
     this.enabled = options.enabled;
     this.beforeAck = options.beforeAck;
+    this.useCaseMetrics = options.metrics;
   }
 
   onModuleInit(): void {
@@ -174,7 +187,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async process(message: SqsMessage): Promise<void> {
-    const receiveCount = message.Attributes?.ApproximateReceiveCount;
+    const receiveCount = Number.parseInt(message.Attributes?.ApproximateReceiveCount ?? '1', 10);
     const body = message.Body ?? '';
 
     const envelope = this.parseEnvelope(body);
@@ -183,6 +196,24 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
       // da fila leva à DLQ após `maxReceiveCount` (5).
       this.log('warn', 'sqs.envelope_invalid', { sqsMessageId: message.MessageId });
       return;
+    }
+
+    // Escopo de log do message SQS: correlationId = messageId (escolha única
+    // para traçar a mensagem do recebimento à publicação do evento original).
+    await withLogContextFields({ messageId: envelope.messageId, correlationId: envelope.messageId }, async () =>
+      this.processEnvelope(message, envelope, body, receiveCount),
+    );
+  }
+
+  private async processEnvelope(
+    message: SqsMessage,
+    envelope: { messageId: string; data: unknown },
+    body: string,
+    receiveCount: number,
+  ): Promise<void> {
+    // Retry SQS visível: redelivery (visibilidade vencida/deferred) já na 2ª entrega.
+    if (receiveCount >= 2) {
+      this.useCaseMetrics?.increment(SQS_RETRIES_TOTAL);
     }
 
     const input = this.buildInput(envelope);
@@ -197,18 +228,24 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     }
 
     let result: SubmitWagerResult;
+    // Redelivery detectado só sobrevive se o commit acontecer: o contador entra
+    // APÓS o `execute` (mesma semântica do ack).
+    let inboxDuplicate = false;
     try {
       result = await this.useCase.execute(input, {
         beforeRepositories: async (repositories) => {
           // Commit = consumo efetivo: a linha só sobrevive junto com o efeito.
-          const message = InboxMessage.receive({
+          const inboxMessage = InboxMessage.receive({
             consumerName: this.options.consumerName,
             messageId: envelope.messageId,
             payloadHash: createHash('sha256').update(body).digest('hex'),
             receivedAt: new Date(),
           });
-          message.markProcessed(new Date());
-          return repositories.inbox.tryInsert(message);
+          inboxMessage.markProcessed(new Date());
+          const inserted = await repositories.inbox.tryInsert(inboxMessage);
+          if (!inserted) {
+            inboxDuplicate = true;
+          }
         },
       });
     } catch (error) {
@@ -221,6 +258,10 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
         error: String(error),
       });
       return;
+    }
+
+    if (inboxDuplicate) {
+      this.useCaseMetrics?.increment(WAGER_DUPLICATES_TOTAL, { source: 'inbox' });
     }
 
     this.log('info', 'sqs.processed', {

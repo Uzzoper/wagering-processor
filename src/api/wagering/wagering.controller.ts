@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, Res } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Req, Res } from '@nestjs/common';
 
 import type { StoredTransaction } from '../../application/ports';
 import {
@@ -35,6 +35,11 @@ interface StatusResponse {
   status(code: number): unknown;
 }
 
+/** Request mínimo do middleware de correlação (veja `correlationMiddleware`). */
+interface CorrelatedRequest {
+  correlationId?: string;
+}
+
 /**
  * Endpoints de wagering. Sem auth (deferida globalmente — §6): abertos.
  * Sucesso com status variável (201/200/202) via `passthrough`; negócio
@@ -51,6 +56,7 @@ export class WageringController {
   async submitTransaction(
     @Headers('idempotency-key') idempotencyKey: string | string[] | undefined,
     @Body(SubmitWagerPipe) body: SubmitWagerBody,
+    @Req() request: CorrelatedRequest,
     @Res({ passthrough: true }) res: StatusResponse,
   ): Promise<SubmitWagerResponse> {
     const key = Array.isArray(idempotencyKey) ? idempotencyKey[0] : idempotencyKey;
@@ -69,6 +75,8 @@ export class WageringController {
       kind: body.kind,
       money: body.money,
       referenceExternalTransactionId: body.referenceExternalTransactionId,
+      // Borda → use case: o X-Correlation-Id do request (propagado p/ outbox).
+      correlationId: request.correlationId,
     });
 
     switch (result.outcome) {
