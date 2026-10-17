@@ -1,9 +1,8 @@
 import { MikroORM } from '@mikro-orm/postgresql';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import type { Subprocess } from 'bun';
-import { resolve } from 'node:path';
 
 import { buildMikroOrmConfig } from '../../src/infra/mikro-orm.config';
+import { spawnApp, stopAllApps, type SpawnApp } from '../helpers/app-process';
 import { assertLedgerConsistency } from '../integration/ledger-consistency';
 
 /**
@@ -16,7 +15,6 @@ import { assertLedgerConsistency } from '../integration/ledger-consistency';
  * `wagering_test`; aqui só fazemos queries via MikroORM.init direto.
  */
 
-const ROOT = resolve(import.meta.dir, '../..');
 const PORTS = [4311, 4312, 4313];
 const BASE_URLS = PORTS.map((port) => `http://127.0.0.1:${port}`);
 
@@ -34,39 +32,10 @@ interface SubmitBody {
 }
 
 let orm: MikroORM;
-const instances: Subprocess[] = [];
+const instances: SpawnApp[] = [];
 
 function query<T>(sql: string, params: unknown[] = []): Promise<T> {
   return orm.em.getConnection().execute(sql, params) as Promise<T>;
-}
-
-/** Sobe uma instância de verdade e espera `GET /health/live` responder. */
-async function spawnInstance(port: number): Promise<Subprocess> {
-  const proc = Bun.spawn(['bun', 'run', 'src/main.ts'], {
-    cwd: ROOT,
-    env: { ...process.env, PORT: String(port), WORKERS_ENABLED: 'api' },
-    stdout: 'ignore',
-    stderr: 'inherit',
-  });
-
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/health/live`);
-      if (response.ok) {
-        return proc;
-      }
-    } catch {
-      // ainda não subiu: nova tentativa até o deadline
-    }
-    if (proc.exitCode !== null) {
-      throw new Error(`instância da porta ${port} morreu antes de ficar pronta`);
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`timeout: instância da porta ${port} não respondeu /health/live`);
-    }
-    await Bun.sleep(200);
-  }
 }
 
 interface WagerInput {
@@ -122,24 +91,15 @@ beforeAll(async () => {
   // via `process.env`, usado no spawn.
   orm = await MikroORM.init(buildMikroOrmConfig());
   instances.push(
-    await spawnInstance(PORTS[0]!),
-    await spawnInstance(PORTS[1]!),
-    await spawnInstance(PORTS[2]!),
+    await spawnApp({ port: PORTS[0]!, workers: 'api' }),
+    await spawnApp({ port: PORTS[1]!, workers: 'api' }),
+    await spawnApp({ port: PORTS[2]!, workers: 'api' }),
   );
 }, 60_000);
 
 afterAll(async () => {
-  // SIGTERM + esperar sair — mesmo se os asserts falharem.
-  await Promise.all(
-    instances.map(async (proc) => {
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // já saído: nada a fazer
-      }
-      await proc.exited;
-    }),
-  );
+  // Shutdown com SIGKILL de cauda — mesmo se os asserts falharem.
+  await stopAllApps(instances);
   await orm.close(true);
 });
 

@@ -12,7 +12,7 @@ import { buildMikroOrmConfig } from '../../src/infra/mikro-orm.config';
 import { CreateWalletUseCase } from '../../src/application/create-wallet.use-case';
 import type { UnitOfWork } from '../../src/application/ports';
 import { MikroOrmUnitOfWork } from '../../src/infra/persistence/unit-of-work';
-import { spawnApp, type SpawnApp } from '../helpers/app-process';
+import { spawnApp, stopAllApps, type SpawnApp } from '../helpers/app-process';
 import {
   createPrivateEventsQueue,
   createPrivateWagerQueues,
@@ -217,9 +217,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  for (const spawn of spawns) {
-    await spawn.stop().catch(() => undefined);
-  }
+  await stopAllApps(spawns);
   // Filas privadas desta rodada: melhor esforço, uma filas órfãs não nos atrapalham.
   for (const queueUrl of [wagerUrl, dlqUrl, eventsUrl]) {
     await sqs.send(new DeleteQueueCommand({ QueueUrl: queueUrl })).catch(() => undefined);
