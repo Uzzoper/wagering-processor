@@ -1,9 +1,10 @@
 import {
+  CreateQueueCommand,
   DeleteMessageCommand,
-  GetQueueUrlCommand,
+  GetQueueAttributesCommand,
   PurgeQueueCommand,
   ReceiveMessageCommand,
-  type QueueAttributeName,
+  QueueAttributeName,
   SendMessageCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
@@ -29,7 +30,11 @@ import { SqsWagerConsumer, type SqsWagerConsumerOptions } from '../../src/infra/
  * identificam tudo por UUIDs próprios (`walletId` como `MessageGroupId`).
  */
 
-const WAGER_QUEUE_NAME = process.env.SQS_WAGER_QUEUE ?? 'wager-transactions.fifo';
+/** Filas privadas destas suítes: a purga/drain aqui não toca as demais que
+ * compartilham a LocalStack (e vice-versa). Mesma forma das de produção:
+ * FIFO + redrive, para o teste de DLQ provar a política real. */
+const WAGER_QUEUE_NAME = 'test-local-wager-transactions.fifo';
+const DLQ_QUEUE_NAME = 'test-local-wager-transactions-dlq.fifo';
 const CONSUMER_NAME = 'test-sqs-consumer';
 const PROVIDER_ID = 'provider-sqs-test';
 
@@ -57,6 +62,7 @@ let orm: MikroORM;
 let unitOfWork: UnitOfWork;
 let sqs: SQSClient;
 let queueUrl: string;
+let dlqUrl: string;
 
 function makeConsumer(overrides: Partial<SqsWagerConsumerOptions> = {}): SqsWagerConsumer {
   const useCase = new SubmitWagerTransactionUseCase(unitOfWork);
@@ -276,11 +282,36 @@ beforeAll(async () => {
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? 'test',
     },
   });
-  const url = await sqs.send(new GetQueueUrlCommand({ QueueName: WAGER_QUEUE_NAME }));
-  queueUrl = url.QueueUrl!;
+  // DLQ privada + fila com RedrivePolicy apontando para ela (mesma forma da
+  // produção: FIFO, dedup e maxReceiveCount 5) — o teste de DLQ continua
+  // provando a política real, só que isolada das demais suítes.
+  const dlq = await sqs.send(new CreateQueueCommand({ QueueName: DLQ_QUEUE_NAME, Attributes: { FifoQueue: 'true' } }));
+  dlqUrl = dlq.QueueUrl!;
+  const dlqAttrs = await sqs.send(
+    new GetQueueAttributesCommand({
+      QueueUrl: dlqUrl,
+      AttributeNames: [QueueAttributeName.QueueArn],
+    }),
+  );
+  const redrive = JSON.stringify({
+    deadLetterTargetArn: dlqAttrs.Attributes!.QueueArn,
+    maxReceiveCount: '5',
+  });
+  const main = await sqs.send(
+    new CreateQueueCommand({
+      QueueName: WAGER_QUEUE_NAME,
+      Attributes: {
+        FifoQueue: 'true',
+        ContentBasedDeduplication: 'true',
+        VisibilityTimeout: '30',
+        RedrivePolicy: redrive,
+      },
+    }),
+  );
+  queueUrl = main.QueueUrl!;
 
-  // Ambiente determinístico entre rodadas: só este arquivo consome/só ele
-  // envia na fila de transações.
+  // Defesa em profundidade: purga por teste já cobre; aqui limpa resíduo de
+  // uma rodada anterior abortada (a DLQ só cresce com seus próprios testes).
   await sqs.send(new PurgeQueueCommand({ QueueUrl: queueUrl }));
 }, 60_000);
 
@@ -431,10 +462,8 @@ describe('payload inválido: permanente, NÃO deleta', () => {
 });
 
 describe('payload inválido: DLQ após maxReceiveCount', () => {
-  test('mensagem inválida para na wager-transactions-dlq.fifo e sai da principal', async () => {
+  test('mensagem inválida para na DLQ (redrive) e sai da fila principal', async () => {
     await purgeQueue();
-    const dlq = await sqs.send(new GetQueueUrlCommand({ QueueName: 'wager-transactions-dlq.fifo' }));
-    const dlqUrl = dlq.QueueUrl!;
     await sqs.send(new PurgeQueueCommand({ QueueUrl: dlqUrl }));
 
     // Corpo que nunca parseia: sem messageId, sem inbox, sem efeito — só redrive.

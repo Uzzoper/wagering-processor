@@ -1,6 +1,6 @@
 import {
+  CreateQueueCommand,
   DeleteMessageCommand,
-  GetQueueUrlCommand,
   PurgeQueueCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
@@ -35,7 +35,9 @@ import {
  * `consumer.cycle()` manualmente, com clock fake mutável — zero sleep.
  */
 
-const WAGER_QUEUE_NAME = process.env.SQS_WAGER_QUEUE ?? 'wager-transactions.fifo';
+/** Fila privada deste arquivo: o cenário SQS roda isolado — purga/drain aqui
+ * não destrói mensagens das outras suítes da LocalStack (e vice-versa). */
+const WAGER_QUEUE_NAME = 'test-local-pending-wager-transactions.fifo';
 const CONSUMER_NAME = 'test-pending-ref-consumer';
 const PROVIDER_ID = 'provider-pending-test';
 
@@ -349,8 +351,13 @@ beforeAll(async () => {
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? 'test',
     },
   });
-  const url = await sqs.send(new GetQueueUrlCommand({ QueueName: WAGER_QUEUE_NAME }));
-  queueUrl = url.QueueUrl!;
+  const created = await sqs.send(
+    new CreateQueueCommand({
+      QueueName: WAGER_QUEUE_NAME,
+      Attributes: { FifoQueue: 'true', ContentBasedDeduplication: 'true' },
+    }),
+  );
+  queueUrl = created.QueueUrl!;
   await sqs.send(new PurgeQueueCommand({ QueueUrl: queueUrl }));
 }, 60_000);
 
