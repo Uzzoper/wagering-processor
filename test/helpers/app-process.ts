@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 /**
  * Fatia 7d — processo REAL do app (`bun run src/main.ts`) para os testes de
  * multiprocessamento e crash recovery. O filho herda o `process.env` do
- * runner (preload já aponta `DB_NAME=wagering_test` e credenciais do compose).
+ * runner, incluindo banco de teste e defaults SQS/LocalStack do preload.
  */
 
 const ROOT = resolve(import.meta.dir, '..', '..');

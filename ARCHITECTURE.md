@@ -321,18 +321,18 @@ Consistência travada: `400` = borda inválida; `404` = wallet inexistente; `409
 * `PENDING_REFERENCE` de 24h retém linhas; precisa de purga/arquivamento futuro.
 * Com os defaults (`SQS_RETRY_BASE_DELAY_SECONDS=30`, `SQS_RETRY_MAX_DELAY_SECONDS=3600`), `maxReceiveCount = 5` e retry contado por recebimento, a quinta tentativa pode acontecer cerca de 7m30 após a primeira; se o Postgres continuar indisponível até a próxima tentativa (cerca de 15m30 no total), uma mensagem válida pode ir para a DLQ. Esse risco é um trade-off assumido do limite de tentativas: após a recuperação, a mensagem pode ser reprocessada pelo redrive da DLQ. Alterar base/teto muda essa janela. A contagem segue a [política de redrive do SQS](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html).
 * Outbox polling (500ms/50) tem lag mínimo; sem CDC (Debezium) nesta fase.
-* Carga é diferencial opcional — só após o núcleo verde, se sobrar tempo.
+* Carga é diferencial opcional e não faz parte desta entrega.
 
 **Decisões do dono (resolvidas antes de codar):**
 
 1. `lock_timeout 3s` + `503` com retry. Sem fila interna por wallet (complexidade extra sem ganho de nota).
 2. TTL 24h / 20 tentativas mantidos, configuráveis por env (`PENDING_REF_TTL_HOURS`, `PENDING_REF_MAX_ATTEMPTS`) para testes usarem TTL curto.
 3. Só a fila SQS de eventos `wager-events.fifo`. Webhook fora de escopo.
-4. `test:load` só no fim, se sobrar tempo.
+4. `test:load` é diferencial opcional e não faz parte desta entrega.
 
-## Pendências por fatia (do review pós-5a — não fazer antes da hora)
+## Limitações conhecidas e fora de escopo
 
-- ✓ Fatia 7 (mensageria): `GET /health/ready`, `InboxMessage` de domínio, tests de crash recovery via ganchos `FAULT_*` (commit/ack e claim/publicação, fatia 7d). Fatia 7d completa: consumer e publisher mortos entre commit/ack e claim/publicação (`crash-recovery`), carga multiprocesso com 3 instâncias `api,outbox,pending` + consumer SQS separado — 80/80, replay 50×, perna SQS com reenvios (`multiprocess-replay`) e SIGKILL com substituição + carga mista envolvendo `REFUND` antes da referência, exaustão de tentativas → `REJECTED REFERENCE_NOT_FOUND` e prova de eventos `outbox ⊆ fila de eventos` (`kill-restart`).
-- ✓ Fatia 8a (consultas): `GET /wallets/:walletId/ledger` (keyset `(created_at, id)`, cursor base64url µs-preciso, limit 50/200) e `POST /wallets/:walletId/reconciliation` (query única READ COMMITTED, `MetricsPort` em memória + contador `reconciliation_mismatches_total`), com migration reversível do índice `idx_ledger_wallet_created_id` e testes HTTP de paginação/reconciliação.
-- ✓ Fatia 8b (observabilidade): logs JSON de uma linha com correlationId via ALS (`LOG_LEVEL` env, logger do Nest incluso no boot), `GET /health/ready` com checks reais de Postgres e SQS (2s por check) e `GET /metrics` em formato Prometheus à mão (registry `MetricsPort` com counter/histograma/gauge; instrumentação da submissão, consumer, outbox, lock e reconciliação), com suíte de integração de processo real (spawn + carga HTTP + assert de stdout/contadores).
-- Fatia 8 (polimento): limpeza de docblocks (AGENTS "só onde não óbvio"), regex de escala duplicado DTO×domínio, interpretação do `Money.equals` cross-currency (hoje retorna `false`; reavaliar contra a leitura literal da spec).
+- A igualdade `Money.equals` entre moedas diferentes retorna `false`; operações aritméticas e ordenais exigem moedas iguais e lançam erro de domínio.
+- A escala de `Money.amount` é validada na borda e no domínio para manter erros HTTP de payload distintos dos erros de domínio.
+- `bun run test:load` não foi implementado; teste de carga é um diferencial opcional do desafio.
+- Auth real, rate-limit por provedor, ledger de partidas dobradas e CDC ficam fora do escopo desta entrega.

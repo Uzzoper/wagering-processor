@@ -37,26 +37,26 @@ interface SqsMessage {
 export interface SqsWagerConsumerOptions {
   /** `WORKERS_ENABLED` contém `sqs`. */
   enabled: boolean;
-  /** Long polling SQS por ciclo (`ReceiveMessageCommand.WaitTimeSeconds`). */
-  waitTimeSeconds?: number; // default 10
-  maxMessages?: number; // default 10 (teto SQS)
+  /** Consulta longa do SQS por ciclo (`ReceiveMessageCommand.WaitTimeSeconds`). */
+  waitTimeSeconds?: number; // padrão 10
+  maxMessages?: number; // padrão 10 (teto SQS)
   /** Igual ao `VisibilityTimeout` da fila (§5: 30s). */
-  visibilityTimeoutSeconds?: number; // default 30
-  /** Heartbeat `ChangeMessageVisibilityBatch` para mensagens em voo. */
-  heartbeatMs?: number; // default 20000
-  /** Espera entre ciclos vazios (o long polling já é a principal espera). */
-  pollIntervalMs?: number; // default 100
-  /** Nome fixo do consumidor no dedup do inbox. */
-  consumerName?: string; // default 'wager-sqs-consumer'
-  retryBaseDelaySeconds?: number; // default 30
-  retryMaxDelaySeconds?: number; // default 3600
+  visibilityTimeoutSeconds?: number; // padrão 30
+  /** Renovação periódica da visibilidade em lote. */
+  heartbeatMs?: number; // padrão 20000
+  /** Espera entre ciclos vazios (a consulta longa já é a espera principal). */
+  pollIntervalMs?: number; // padrão 100
+  /** Nome fixo do consumidor para deduplicação da inbox. */
+  consumerName?: string; // padrão 'wager-sqs-consumer'
+  retryBaseDelaySeconds?: number; // padrão 30
+  retryMaxDelaySeconds?: number; // padrão 3600
   /**
-   * Hook de teste/fault-injection: roda antes do DELETE (ack); lançar dele
-   * simula morte pós-commit — a mensagem NÃO é deletada e o redelivery
-   * entra pelo replay via inbox.
+   * Gancho de teste/injeção de falha: roda antes do DELETE (ack); lançar dele
+   * simula morte pós-commit: a mensagem NÃO é deletada e a reentrega
+   * é deduplicada pela inbox.
    */
   beforeAck?: (messageId: string) => Promise<void>;
-  /** Registry da casa (fatia 8b): retries de SQS e duplicata por inbox. */
+  /** Registro da casa (fatia 8b): tentativas SQS e duplicata por inbox. */
   metrics?: MetricsPort;
 }
 
@@ -76,7 +76,7 @@ function withDefaults(options: SqsWagerConsumerOptions): ConsumerRuntimeOptions 
   };
 }
 
-/** Registry injetado à parte (não faz parte do runtime numérico). */
+/** Registro injetado à parte (não faz parte das opções numéricas de execução). */
 function withMetrics(options: SqsWagerConsumerOptions): MetricsPort | undefined {
   return options.metrics;
 }
@@ -98,7 +98,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
   private resolveSleep?: () => void;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private queueUrlPromise?: Promise<string>;
-  /** Receipt → timeout atual (para manter o heartbeat alinhado ao backoff). */
+  /** Recibo → timeout atual (para alinhar a renovação ao backoff). */
   private inFlight = new Map<string, number>();
 
   private readonly useCaseMetrics?: MetricsPort;
@@ -130,7 +130,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     this.loopPromise = this.loop();
   }
 
-  /** Shutdown limpo (SIGTERM): para o polling/heartbeat, conclui o em voo; nada de ack sem commit. */
+  /** Desligamento limpo (SIGTERM): para consulta e renovação, conclui o que está em voo. */
   async onApplicationShutdown(): Promise<void> {
     this.running = false;
     if (this.heartbeatTimer) {
@@ -148,7 +148,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
-   * Um ciclo: recebe (long polling) até `maxMessages` e processa sequencial
+   * Um ciclo: recebe até `maxMessages` pela consulta longa e processa em sequência
    * (ordem FIFO por grupo). Retorno = quantidade recebida (0 = fila vazia).
    */
   async cycle(): Promise<number> {
@@ -158,7 +158,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
         MaxNumberOfMessages: this.options.maxMessages,
         WaitTimeSeconds: this.options.waitTimeSeconds,
         VisibilityTimeout: this.options.visibilityTimeoutSeconds,
-        // `ApproximateReceiveCount` não está no enum do SDK, mas a SQS aceita.
+        // `ApproximateReceiveCount` não está no enum do SDK, mas a SQS aceita o campo.
         AttributeNames: ['ApproximateReceiveCount' as QueueAttributeName],
       }),
     );
@@ -166,7 +166,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     for (const message of messages) {
       this.inFlight.set(message.ReceiptHandle!, this.options.visibilityTimeoutSeconds);
     }
-    // Sequencial para preservar a ordem de entrega FIFO por MessageGroupId.
+    // Processa em sequência para preservar a ordem FIFO de cada grupo.
     for (const message of messages) {
       try {
         await this.process(message as SqsMessage);
@@ -201,13 +201,13 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
 
     const envelope = this.parseEnvelope(body);
     if (envelope === undefined) {
-      // Parse quebrado ou type desconhecido: permanente — NÃO deleta; o redrive
+      // Envelope ilegível ou tipo desconhecido: erro permanente — NÃO deleta; o redrive
       // da fila leva à DLQ após `maxReceiveCount` (5).
       this.log('warn', 'sqs.envelope_invalid', { sqsMessageId: message.MessageId });
       return;
     }
 
-    // Escopo de log do message SQS: correlationId = messageId (escolha única
+    // Escopo de log da mensagem SQS: correlationId = messageId (escolha única
     // para traçar a mensagem do recebimento à publicação do evento original).
     await withLogContextFields({ messageId: envelope.messageId, correlationId: envelope.messageId }, async () =>
       this.processEnvelope(message, envelope, body, receiveCount),
@@ -220,7 +220,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     body: string,
     receiveCount: number,
   ): Promise<void> {
-    // Retry SQS visível: redelivery (visibilidade vencida/deferred) já na 2ª entrega.
+    // Conta a nova tentativa a partir da 2ª entrega (visibilidade vencida ou adiada).
     if (receiveCount >= 2) {
       this.useCaseMetrics?.increment(SQS_RETRIES_TOTAL);
     }
@@ -237,13 +237,13 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     }
 
     let result: SubmitWagerResult;
-    // Redelivery detectado só sobrevive se o commit acontecer: o contador entra
+    // A reentrega só conta se o commit acontecer: o contador entra
     // APÓS o `execute` (mesma semântica do ack).
     let inboxPayloadConflict = false;
     try {
       result = await this.useCase.execute(input, {
         beforeRepositories: async (repositories) => {
-          // Commit = consumo efetivo: a linha só sobrevive junto com o efeito.
+          // Commit confirma o consumo: a linha só sobrevive junto com o efeito.
           const inboxMessage = InboxMessage.receive({
             consumerName: this.options.consumerName,
             messageId: envelope.messageId,
@@ -261,7 +261,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
       });
     } catch (error) {
       // Transitório (PG fora, lock timeout…): NÃO deleta; aumenta a visibilidade
-      // exponencialmente conforme ApproximateReceiveCount.
+      // exponencialmente conforme `ApproximateReceiveCount`.
       this.log('error', 'sqs.process_deferred', {
         messageId: envelope.messageId,
         walletId: input.walletId,
@@ -293,9 +293,8 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
       });
     }
 
-    // Gancho de crash recovery (teste, fatia 7d): mata o processo REAL exatamente
-    // depois do commit e antes do primeiro DELETE — a redelivery termina pelo
-    // no-op da inbox. Somente em NODE_ENV=test, nunca em produção.
+    // Gancho de teste: encerra o processo após o commit e antes do primeiro DELETE.
+    // A inbox torna a reentrega sem efeito. Restrito a NODE_ENV=test.
     if (process.env.NODE_ENV === 'test' && process.env.FAULT_EXIT_AFTER_COMMIT === '1') {
       this.log('warn', 'test.fault_exit', {
         messageId: envelope.messageId,
@@ -304,9 +303,8 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
       process.exit(137);
     }
 
-    // Commit aconteceu — terminal (PROCESSED/REJECTED/PENDING_REFERENCE/
-    // WALLET_NOT_FOUND/conflito/dedup): ack agora. beforeAck (fault injection)
-    // lançando = morte pós-commit: a mensagem fica recebível para replay.
+    // Commit concluído: confirma o caso terminal. beforeAck simula falha de teste;
+    // se lançar, a mensagem volta a ser recebida para reprocessamento.
     await this.beforeAck?.(envelope.messageId);
     try {
       await this.client.send(
@@ -394,7 +392,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     );
   }
 
-  /** Infra transitória: deixa a mensagem invisível por 30s, 60s, 120s... até 1h. */
+  /** Falha transitória: oculta a mensagem por 30s, 60s, 120s... até 1h. */
   private async deferWithBackoff(message: SqsMessage, receiveCount: number): Promise<void> {
     const receiptHandle = message.ReceiptHandle;
     if (receiptHandle === undefined) {
@@ -420,7 +418,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  /** Heartbeat: estende a visibilidade das mensagens em voo (~lote de 10). */
+  /** Renova a visibilidade das mensagens em voo (lotes de até 10). */
   private async heartbeat(): Promise<void> {
     if (!this.running || this.inFlight.size === 0) {
       return;
@@ -455,7 +453,7 @@ export class SqsWagerConsumer implements OnModuleInit, OnApplicationShutdown {
         return response.QueueUrl;
       })
       .catch((error) => {
-        // Falha transitória da resolução não é memorizada.
+        // Falha transitória ao resolver a fila não fica em cache.
         this.queueUrlPromise = undefined;
         throw error;
       });
